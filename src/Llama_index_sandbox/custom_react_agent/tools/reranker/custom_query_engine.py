@@ -34,8 +34,25 @@ class CustomQueryEngine(RetrieverQueryEngine):
             authors_list=self.authors_list,
             authors_weights=self.authors_weights
         )
-        self.merged_df = load_csv_data(f"{root_directory()}/datasets/evaluation_data/merged_articles.csv")
-        self.updated_df = load_csv_data(f"{root_directory()}/datasets/evaluation_data/articles_updated.csv")
+
+        # Safe loading of CSV files
+        merged_csv_path = f"{root_directory()}/datasets/evaluation_data/merged_articles.csv"
+        updated_csv_path = f"{root_directory()}/datasets/evaluation_data/articles_updated.csv"
+
+        if os.path.exists(merged_csv_path):
+            self.merged_df = load_csv_data(merged_csv_path)
+            logging.info(f"Loaded merged_articles.csv with {len(self.merged_df)} rows")
+        else:
+            self.merged_df = pd.DataFrame()
+            logging.warning(f"merged_articles.csv not found at {merged_csv_path}, using empty DataFrame")
+
+        if os.path.exists(updated_csv_path):
+            self.updated_df = load_csv_data(updated_csv_path)
+            logging.info(f"Loaded articles_updated.csv with {len(self.updated_df)} rows")
+        else:
+            self.updated_df = pd.DataFrame()
+            logging.warning(f"articles_updated.csv not found at {updated_csv_path}, using empty DataFrame")
+
         self.discourse_only_penalty = float(os.environ.get('DISCOURSE_ONLY_PENALTY', '0.50'))
         self.forum_name_in_title_penalty = float(os.environ.get('FORUM_NAME_IN_TITLE_PENALTY', '1.5'))
         self.doc_to_remove = float(os.environ.get('DOC_TO_REMOVE', '0.0'))
@@ -45,21 +62,8 @@ class CustomQueryEngine(RetrieverQueryEngine):
     weights_file = f"{root_directory()}/datasets/evaluation_data/effective_weights.pkl"
     document_weights = {
         f'{DOCUMENT_TYPES.ARTICLE.value}_weights': {
-            'ethresear.ch': 1.2,
-            'ethereum.org': 1.2,
-            'flashbot': 1.2,
-            'writings.flashbots.net': 1.2,
-            'frontier.tech': 1.1,
-            'research.anoma.net': 1.1,
-            'dba.xyz': 1.1,
-            'default': 1
         },
         f'{DOCUMENT_TYPES.YOUTUBE_VIDEO.value}_weights': {
-            'Flashbots': 1,
-            'Bell Curve 2023': 0.95,
-            'Fenbushi Capital': 0.95,
-            'SevenX Ventures': 0.95,
-            'Research Day': 0.95,
             'Tim Roughgarden Lectures': 0.95,
             'default': float(os.environ.get('DEFAULT_YOUTUBE_VIDEO_WEIGHT', '0.90'))
         },
@@ -71,75 +75,14 @@ class CustomQueryEngine(RetrieverQueryEngine):
         }
     }
     authors_list = {
-        'EF': {
-            'https://ethresear.ch/u/mikeneuder',
-            'https://ethresear.ch/u/barnabe',
-            'https://ethresear.ch/u/potuz',
-            'https://ethresear.ch/u/soispoke',
-            'https://ethresear.ch/u/mteam88',
-            'https://ethresear.ch/u/terence',
-            'https://ethresear.ch/u/vbuterin',
-            'https://ethresear.ch/u/casparschwa',
-            'https://ethresear.ch/u/edfelten',
-            'https://ethresear.ch/u/justindrake',
-            'https://ethresear.ch/u/fradamt',
-            'https://ethresear.ch/u/dmarz',
-            'https://ethresear.ch/u/dcrapis',
-            'https://ethresear.ch/u/nerolation',
-            'https://ethresear.ch/u/ballsyalchemist',
-            'https://ethresear.ch/u/thegostep',
-            'https://ethresear.ch/u/thogard785',
-            'https://ethresear.ch/u/diego',
-            'https://ethresear.ch/u/drewvanderwerff',
-            'https://ethresear.ch/u/joseph'
-        },
-        'Ethereum.org': {
-                'Ethereum.org'
-        },
-        'Flashbots': {
-            'https://collective.flashbots.net/u/Quintus',
-            'https://collective.flashbots.net/u/flashbots',
-            'https://collective.flashbots.net/u/chayoterabit',
-            'https://collective.flashbots.net/u/dmarz',
-            'https://collective.flashbots.net/u/bert',
-            'https://collective.flashbots.net/u/sarah',
-            'https://collective.flashbots.net/u/elainehu/',
-            'https://collective.flashbots.net/u/Fred',
-            'https://collective.flashbots.net/u/system/summary',
-            'Flashbots Docs'
-        },
     }
     authors_weights = {
-        'Flashbots': 1.15,
-        'EF': 1.15,
         'Ethereum.org': 1.15,
         'default': 1,
     }
 
-    keywords_to_penalise = ['temp', 'contribute', 'temperature', 'help', 'urgent', 'question', 'questions', 'read this', 'community introduction', 'docs', 'style']
-    edge_case_of_content_always_cited = ['Editorial content: Strategies and tactics | Sonal Chokshi',
-                                         'The news', 'Docs Style Guide', 'Uniswap v4 and the DAO','data feeds getting started',
-                                         'Docs Cheatsheet', 'Are there products available?', 'Introductions',
-                                         'ensip', 'ensip 9', 'ensip 14', 'ensip 2','ensip 4','ensip 3',
-                                         'Welcome to the ApeCoin DAO Discourse', 'Forum > Discourse',
-                                         'Reply to the forum from your email', 'https:-twitter.com-zerolendxyz.pdf',
-                                         'This topic has been removed','Ways to contribute', 'https:-www.gitbook.com.pdf',
-                                         'Community introductions thread', 'Read this before posting',
-                                         'StarkNet 🛠 Basecamp Session 1:Fundamentals',
-                                         '',
-                                         'Starknet Community Call #49 | The Art of Clarity: Simplifying Complex Information Beyond Bullets',
-                                         'Lev Livnev, Dapp.org, Symbolic Capital Partners - Private Trade Settlement and Dark Pools',
-                                         'Using AI to find bugs in Solidity code',
-                                         'The comprehensive guide to writing blogposts', 'We need a system to vet new users of the forum',
-                                         'State of MEV Report - Request for Comments', 'Lesson 5 Part 1 | AI Prompting & Forums - Solidity & Foundry Full Course',
-                                         'Effective Debugging Strategies | Ultimate Web3 Solidity & Javascript Course | Lesson 5 Pt. 1', 'Learn Foundational Ethereum Topics with SQL',
-                                         'MEVconomics.wtf on March 24th, 2023', 'Launching mev.fyi, the MEV research chatbot - Meta-innovation - Ethereum Research',
-                                         'Launching mev.fyi, the MEV research chatbot', 'A great idea. Any more presentations? Let me know how you get on',
-                                         '“https” in blockchain: Verifiable Formal Verification of Smart Contracts', 'How to Implement Digital Community Currencies with Ethereum?',
-                                         'Question: crs download link', 'Questions on the Espresso sequencer',
-                                         'Flashbots Research Workshop #1: Flashbots Research Roadmap', 'Time-locked 1:1 tokens as rudimentary pseudo-futures',
-                                         'The Story of the Internet, Emergent Networks, and Their Effects with Steven Johnson and Chris Dixon',
-                                         'Should external links be allowed_prohibited_restricted']
+    keywords_to_penalise = []
+    edge_case_of_content_always_cited = []
 
     edge_case_set = set(edge_case_of_content_always_cited)
 
@@ -213,9 +156,19 @@ class CustomQueryEngine(RetrieverQueryEngine):
             return {}  # Return an empty dictionary in case of an error
 
     def penalise_if_discourse_only_or_forum_name_in_title(self, nodes_with_score: List[NodeWithScore]):
-        merged_links = set(self.merged_df['Link'].dropna().unique())
-        updated_titles = set(self.updated_df['title'].dropna().unique())
-        updated_links = set(self.updated_df['article'].dropna().unique())
+        # Check if DataFrames have required columns before using them
+        merged_links = set()
+        updated_titles = set()
+        updated_links = set()
+
+        if not self.merged_df.empty and 'Link' in self.merged_df.columns:
+            merged_links = set(self.merged_df['Link'].dropna().unique())
+
+        if not self.updated_df.empty:
+            if 'title' in self.updated_df.columns:
+                updated_titles = set(self.updated_df['title'].dropna().unique())
+            if 'article' in self.updated_df.columns:
+                updated_links = set(self.updated_df['article'].dropna().unique())
 
         for node_with_score in nodes_with_score:
             if node_with_score.node.metadata.get('document_type', '') == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
@@ -225,28 +178,28 @@ class CustomQueryEngine(RetrieverQueryEngine):
 
             # Adjust score based on link and title conditions
             if link in merged_links and link not in updated_links:
-                #  and title not in updated_titles
                 node_with_score.score *= self.discourse_only_penalty
 
             # Further adjust score if title contains specific keywords
             if "ethereum research" in title.lower() or "flashbots collective" in title.lower():
-                node_with_score.score *= self.forum_name_in_title_penalty  # Apply further adjustment for specific keywords in title
+                node_with_score.score *= self.forum_name_in_title_penalty
 
         return nodes_with_score
 
     def populate_missing_pdf_links(self, nodes_with_score: List[NodeWithScore]):
-        # Load data from CSV files
+        # Create a mapping from titles to links only if DataFrames are not empty
+        titles_links_mapping = {}
 
-        # No renaming needed for merged_df as it already has 'Link'
-        # For updated_df, ensure the column used for the link is named 'article', as per the headers
-        # Combine both DataFrames for easier title matching
-        combined_df = pd.concat([
-            self.merged_df[['Title', 'Link']],
-            self.updated_df.rename(columns={'article': 'Link', 'title': 'Title'})[['Title', 'Link']]
-        ], axis=0, ignore_index=True)
+        if not self.merged_df.empty and 'Title' in self.merged_df.columns and 'Link' in self.merged_df.columns:
+            merged_mapping = self.merged_df[['Title', 'Link']].dropna().set_index('Title')['Link'].to_dict()
+            titles_links_mapping.update(merged_mapping)
 
-        # Create a mapping from titles to links
-        titles_links_mapping = combined_df.dropna(subset=['Title', 'Link']).set_index('Title')['Link'].to_dict()
+        if not self.updated_df.empty:
+            # Check if required columns exist
+            if 'article' in self.updated_df.columns and 'title' in self.updated_df.columns:
+                updated_mapping = self.updated_df.rename(columns={'article': 'Link', 'title': 'Title'})[
+                    ['Title', 'Link']].dropna().set_index('Title')['Link'].to_dict()
+                titles_links_mapping.update(updated_mapping)
 
         for node_with_score in nodes_with_score:
             if node_with_score.node.metadata.get('document_type', '') == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
@@ -309,15 +262,20 @@ class CustomQueryEngine(RetrieverQueryEngine):
 
     def nodes_reranker(self, nodes_with_score: List[NodeWithScore]) -> List[NodeWithScore]:
         NUM_CHUNKS_RETRIEVED = int(os.environ.get('NUM_CHUNKS_RETRIEVED', '10'))
-        SCORE_THRESHOLD = float(os.environ.get('SCORE_THRESHOLD', '0.68'))
+        SCORE_THRESHOLD = float(os.environ.get('SCORE_THRESHOLD', '0.10'))
         MIN_CHUNKS_FOR_RESPONSE = int(os.environ.get('MIN_CHUNKS_FOR_RESPONSE', '2'))
 
         # Apply special case and keyword penalisation adjustments
         for node_with_score in nodes_with_score:
             self.apply_special_adjustments(node_with_score)
 
+        logging.info(f"count nodes before score threshold filtering [{len(nodes_with_score)}]")
         # Filter out nodes below score threshold
         nodes_with_score = [node for node in nodes_with_score if node.score >= SCORE_THRESHOLD]
+        logging.info(f"count nodes AFTER score threshold filtering [{len(nodes_with_score)}]")
+
+        if len(nodes_with_score)==0:
+            return nodes_with_score
 
         # Call the support method to check links and titles and adjust scores
         nodes_with_score = self.penalise_if_discourse_only_or_forum_name_in_title(nodes_with_score)
@@ -459,7 +417,16 @@ class CustomQueryEngine(RetrieverQueryEngine):
             ) as retrieve_event:
                 nodes = self.retrieve(query_bundle)
 
+                # Log initial retrieval results
+                logging.info(f"Initial retrieval returned {len(nodes)} nodes")
+                if len(nodes) > 0:
+                    logging.info(
+                        f"Initial scores range: {min(n.score for n in nodes):.4f} - {max(n.score for n in nodes):.4f}")
+
                 nodes = self.nodes_reranker(nodes_with_score=nodes)
+
+                # Log after reranking
+                logging.info(f"After reranking: {len(nodes)} nodes remain")
 
                 retrieve_event.on_end(
                     payload={EventPayload.NODES: nodes},
@@ -467,8 +434,8 @@ class CustomQueryEngine(RetrieverQueryEngine):
 
             if not nodes:
                 response_str = """We could not find any results related to your query. 
-                                  However, we encourage you to ask questions about Maximal Extractable Value (MEV) and blockchain research, 
-                                  as these topics are rich with information and ongoing developments. Feel free to ask another question!"""
+                                   However, we encourage you to ask questions about Internet Capital Markets (ICM) and Solana, 
+                                   as these topics are rich with information and ongoing developments. Feel free to ask another question!"""
 
                 response = Response(
                     response_str,
@@ -484,4 +451,3 @@ class CustomQueryEngine(RetrieverQueryEngine):
             query_event.on_end(payload={EventPayload.RESPONSE: response})
 
         return response
-

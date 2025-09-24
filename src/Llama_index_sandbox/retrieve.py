@@ -26,7 +26,7 @@ from llama_index.legacy.utils import print_text
 from src.Llama_index_sandbox.config import MAX_CONTEXT_LENGTHS
 from src.Llama_index_sandbox.constants import OPENAI_MODEL_NAME, LLM_TEMPERATURE, NUMBER_OF_CHUNKS_TO_RETRIEVE, OPENAI_INFERENCE_MODELS
 from src.Llama_index_sandbox.custom_react_agent.logging_handler import JSONLoggingHandler
-from src.Llama_index_sandbox.custom_react_agent.tools.default_prompt_selectors import DEFAULT_TEXT_QA_PROMPT_SEL, DEFAULT_REFINE_PROMPT_SEL, DEFAULT_TREE_SUMMARIZE_PROMPT_SEL
+# from src.Llama_index_sandbox.custom_react_agent.tools.default_prompt_selectors import DEFAULT_TEXT_QA_PROMPT_SEL, DEFAULT_REFINE_PROMPT_SEL, DEFAULT_TREE_SUMMARIZE_PROMPT_SEL
 from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_vector_store_index import CustomVectorStoreIndex
 from src.Llama_index_sandbox.prompts import SYSTEM_MESSAGE, QUERY_TOOL_RESPONSE, QUERY_ENGINE_TOOL_DESCRIPTION
 from src.Llama_index_sandbox.custom_react_agent.ReActAgent import CustomReActAgent
@@ -42,19 +42,24 @@ from src.Llama_index_sandbox.utils.utils import timeit
 
 def get_query_engine(index, service_context, verbose=True, similarity_top_k=5):
     """Get a response synthesizer."""
-    text_qa_template = DEFAULT_TEXT_QA_PROMPT_SEL
-    refine_template = DEFAULT_REFINE_PROMPT_SEL
-    simple_template = DEFAULT_SIMPLE_INPUT_PROMPT
-    summary_template = DEFAULT_TREE_SUMMARIZE_PROMPT_SEL
-    return index.as_query_engine(similarity_top_k=similarity_top_k,
-                                 service_context=service_context,
-                                 verbose=verbose,
-                                 text_qa_template=text_qa_template,
-                                 refine_template=refine_template,
-                                 simple_template=simple_template,
-                                 summary_template=summary_template,
-                                 )
+    from llama_index.legacy.response_synthesizers import get_response_synthesizer, ResponseMode
 
+    # Create a clean response synthesizer without custom templates
+    response_synthesizer = get_response_synthesizer(
+        response_mode=ResponseMode.COMPACT,
+        service_context=service_context,
+        verbose=verbose,
+    )
+
+    # Use the index's as_query_engine but override the response_synthesizer
+    query_engine = index.as_query_engine(
+        similarity_top_k=similarity_top_k,
+        service_context=service_context,
+        verbose=verbose,
+        response_synthesizer=response_synthesizer,  # Override with clean synthesizer
+    )
+
+    return query_engine
 
 def get_inference_llm(llm_model_name):
     if llm_model_name in OPENAI_INFERENCE_MODELS:
@@ -184,12 +189,12 @@ def ask_questions(input_queries, retrieval_engine, query_engine, store_response_
                 logging.info(f"Resetting chat engine after question.")
                 retrieval_engine.reset()  # NOTE 2023-10-27: comment out to reset the chat after each question and see the performance, i.e. correct response given memory versus hallucination.
 
-            if len(input_queries) > 1:
-                response = ChatMessage(
-                    role=MessageRole.USER,
-                    content=response.response,
-                )
-                chat_history.append(response)
+            # if len(input_queries) > 1:
+            #     response = ChatMessage(
+            #         role=MessageRole.ASSISTANT,
+            #         content=response.response,
+            #     )
+            #     chat_history.append(response)
 
         elif isinstance(retrieval_engine, BaseQueryEngine):
             logging.info(f"Querying index with query:    [{query_str}]")

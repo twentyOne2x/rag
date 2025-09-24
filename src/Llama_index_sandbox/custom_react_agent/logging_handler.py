@@ -181,6 +181,10 @@ class JSONLoggingHandler(CallbackManager):
         self.rewrite_log_file()  # Update the log file with the new entry.
 
     def on_event_end(self, event_type: CBEventType, payload: Optional[Dict[str, Any]] = None, event_id: str = "", parent_id: str = "", **kwargs: Any):
+        if payload is None:
+            logging.warning("Payload is None, setting it as empty dict")
+            payload = {}
+
         entry = {}
 
         if event_type == CBEventType.LLM and payload:

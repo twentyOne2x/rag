@@ -50,8 +50,10 @@ class CustomReActAgent(ReActAgent):
         if chat_history is not None:
             self._memory.set(chat_history)
 
-        message_with_tool_description = f"{message}\n{QUERY_ENGINE_TOOL_ROUTER}"
-        self._memory.put(ChatMessage(content=message_with_tool_description, role="user"))
+        # 2025-09-24: fix attempt to the llm not understanding the user question
+        # message_with_tool_description = f"{message}\n{QUERY_ENGINE_TOOL_ROUTER}"
+        # self._memory.put(ChatMessage(content=message_with_tool_description, role="user"))
+        self._memory.put(ChatMessage(content=message, role="user"))
 
         current_reasoning: List[BaseReasoningStep] = []
 
@@ -64,6 +66,19 @@ class CustomReActAgent(ReActAgent):
             input_chat = self._react_chat_formatter.format(
                 tools=self._get_tools(_), chat_history=self._memory.get(), current_reasoning=current_reasoning
             )
+
+            # Add debugging to see what's being sent to LLM
+            logging.info("=" * 50)
+            logging.info("DEBUGGING: Messages being sent to LLM")
+            logging.info(f"Number of messages: {len(input_chat)}")
+            for i, msg in enumerate(input_chat):
+                role_str = str(msg.role.value if hasattr(msg.role, 'value') else msg.role)
+                logging.info(f"\nMessage {i} - Role: {role_str}")
+                if role_str == 'system':
+                    logging.info(f"System message preview: {msg.content[:500]}...")
+                else:
+                    logging.info(f"Content preview: {msg.content[:200]}...")
+            logging.info("=" * 50)
 
             if (last_metadata is None) or (len(input_chat) == 2):  # NOTE 2023-11-20: avoid doing another LLM call if we already have the response from the query engine
                 if os.environ.get('ENGINEER_CONTEXT_IN_TOOL_RESPONSE') == 'True':
@@ -88,7 +103,10 @@ class CustomReActAgent(ReActAgent):
             response_content = chat_response_copy.raw.choices[0].message.content
             # NOTE 2023-10-15: we force the input to the query engine to be the user question.
             #  Otherwise, GPT greatly simplifies the question, and the query engine does very poorly.
-            if 'Action Input:' in response_content:
+            import re, json
+
+            m = re.search(r'Action Input:\s*(\{.*\})', response_content, re.DOTALL)
+            if m:
                 # Extract the part after 'Action Input:'
                 # TODO NOTE 2023-10-15: lets engineer and scrutinise further this part. Beyond passing the question as-is, we can wrap it further e.g.
                 #  add "always make a thorough answer", "directly quote the sources of your knowledge in the same sentence in parentheses".
@@ -115,7 +133,7 @@ class CustomReActAgent(ReActAgent):
                     response_content = response_content.replace(action_input_part, json.dumps(action_input_json))
 
                     # Update the deep-copied chat_response accordingly
-                    chat_response_copy.raw['choices'][0].message.content = response_content
+                    chat_response_copy.raw.choices[0].message.content = response_content
                     chat_response_copy.message.content = response_content  # Update this too
                 except Exception as e:
                     logging.error(f'Error in modifying the Action Input part of the response_content: [{e}]')
@@ -168,7 +186,7 @@ class CustomReActAgent(ReActAgent):
             content=CONFIRM_FINAL_ANSWER.format(question=question, response=response, sources=sources)
         )
         chat_response = self._llm.chat([final_input])
-        final_answer = chat_response.raw['choices'][0]['message']['content']
+        final_answer = chat_response.raw.choices[0]['message']['content']
         return AgentChatResponse(response=final_answer, sources=[])
 
     @timeit

@@ -83,7 +83,47 @@ def run():
                                                                                                  query_engine_as_tool=query_engine_as_tool,
                                                                                                  recreate_index=recreate_index,
                                                                                                  add_new_transcripts=add_new_transcripts)
-    ask_questions(input_queries=INPUT_QUERIES[:10], retrieval_engine=retrieval_engine, query_engine=query_engine,
+
+    # ===== ADD THIS TEST CODE HERE =====
+    logging.info("=" * 50)
+    logging.info("TESTING QUERY ENGINE DIRECTLY")
+    logging.info("=" * 50)
+
+    test_queries = [
+        "Hi how are you?",
+        "Tell me about memecoins",
+        "What is Solana?",
+        "What is Pumpfun",
+        "What is Jupiter aggregator?",
+        "What is JitoSOL?",
+        "Explain MEV on Solana"
+    ]
+
+    for test_query in test_queries:
+        logging.info(f"\nTesting query: {test_query}")
+        try:
+            response = query_engine.query(test_query)
+            logging.info(f"Response type: {type(response)}")
+            logging.info(f"Response: {response}")
+
+            # Check if response has source nodes
+            if hasattr(response, 'source_nodes'):
+                logging.info(f"Number of source nodes: {len(response.source_nodes)}")
+                for i, node in enumerate(response.source_nodes[:2]):  # Show first 2
+                    logging.info(f"Source {i} score: {node.score if hasattr(node, 'score') else 'N/A'}")
+                    logging.info(f"Source {i} text preview: {node.text[:200] if hasattr(node, 'text') else 'N/A'}...")
+        except Exception as e:
+            logging.error(f"Error querying: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+
+    logging.info("=" * 50)
+    logging.info("END OF QUERY ENGINE TEST")
+    logging.info("=" * 50)
+
+
+
+    ask_questions(input_queries=INPUT_QUERIES[:20], retrieval_engine=retrieval_engine, query_engine=query_engine,
                   store_response_partial=store_response_partial, engine=engine, query_engine_as_tool=query_engine_as_tool, chat_history=chat_history, reset_chat=config_instance.reset_chat)
     return retrieval_engine
 
