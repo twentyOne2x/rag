@@ -19,6 +19,25 @@ from src.Llama_index_sandbox.prompts import QUERY_ENGINE_PROMPT_FORMATTER, QUERY
 from src.Llama_index_sandbox.utils.utils import timeit
 
 
+from llama_index.core.base.llms.types import ChatMessage as CoreChatMessage
+from llama_index.legacy.core.llms.types import ChatMessage as LegacyChatMessage
+
+def ensure_core_chat_messages(messages):
+    """Convert messages to core ChatMessage format."""
+    converted = []
+    for msg in messages:
+        if isinstance(msg, CoreChatMessage):
+            converted.append(msg)
+        else:
+            # Convert from legacy or dict format
+            role = str(msg.role.value if hasattr(msg.role, 'value') else msg.role)
+            converted.append(CoreChatMessage(
+                role=role,
+                content=str(msg.content),
+                additional_kwargs=getattr(msg, 'additional_kwargs', {})
+            ))
+    return converted
+
 class CustomReActAgent(ReActAgent):
     from typing import List
 
@@ -52,7 +71,7 @@ class CustomReActAgent(ReActAgent):
                     input_chat[-1].content += f"\n {AVOID_CITING_CONTEXT}"
 
                 logging.info(f"To confirm, the LLM's temperature is: {self._llm.temperature}")
-                chat_response = self._llm.chat(input_chat)
+                chat_response = self._llm.chat(ensure_core_chat_messages(input_chat))
             else:
                 # NOTE 2023-11-20, hack: manually craft the response pattern from the query engine response
                 chat_response = ChatResponse(
@@ -66,7 +85,7 @@ class CustomReActAgent(ReActAgent):
             chat_response_copy = copy.deepcopy(chat_response)
 
             # Enforce user question into Action Input
-            response_content = chat_response_copy.raw['choices'][0].message.content
+            response_content = chat_response_copy.raw.choices[0].message.content
             # NOTE 2023-10-15: we force the input to the query engine to be the user question.
             #  Otherwise, GPT greatly simplifies the question, and the query engine does very poorly.
             if 'Action Input:' in response_content:
