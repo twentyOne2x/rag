@@ -35,6 +35,7 @@ class Config:
             "BAAI/bge-large-en": 1024,
             "BAAI/bge-large-en-v1.5": 1024,
             "text-embedding-ada-002": 1536,
+            "text-embedding-3-large": 3072,
         }
         self.MAX_CONTEXT_LENGTHS = {
             "gpt-4": 8192,

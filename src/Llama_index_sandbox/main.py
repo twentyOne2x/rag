@@ -11,7 +11,7 @@ from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_query_engi
 from src.Llama_index_sandbox.utils.gcs_utils import set_secrets_from_cloud
 from src.Llama_index_sandbox.retrieve import get_engine_from_vector_store, ask_questions, get_inference_llm
 from src.Llama_index_sandbox.utils.utils import start_logging, get_last_index_embedding_params, copy_and_verify_files
-from src.Llama_index_sandbox.index import load_index_from_disk, create_index
+from src.Llama_index_sandbox.index import load_index_from_disk
 
 
 def initialise_chatbot(engine, query_engine_as_tool, recreate_index, add_new_transcripts=False):
@@ -38,15 +38,7 @@ def initialise_chatbot(engine, query_engine_as_tool, recreate_index, add_new_tra
         logging.error(f"The new embedding model parameters are different from the last ones and we are not recreating the index. Do you want to recreate the index or to revert parameters back?")
         assert False
 
-    if recreate_index:
-        model_details = (embedding_model_name, text_splitter_chunk_size, text_splitter_chunk_overlap_percentage)
-        index = create_index(model_details=model_details,
-                             embedding_model=embedding_model,
-                             vector_space_distance_metric=vector_space_distance_metric,
-                             add_new_transcripts=add_new_transcripts,
-                             num_files=num_files)
-    else:
-        index = load_index_from_disk(service_context)
+    index = load_index_from_disk(service_context)
 
     # 7. Retrieve and Query from the Vector Store
     # Now that our ingestion is complete, we can retrieve/query this vector store.

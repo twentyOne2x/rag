@@ -60,7 +60,7 @@ def get_inference_llm(llm_model_name):
     if llm_model_name in OPENAI_INFERENCE_MODELS:
         return OpenAI(model=llm_model_name)
     else:
-        return HuggingFaceLLM(model_name=llm_model_name)
+        raise Exception("Unknown model name: {}".format(llm_model_name))
 
 
 def set_inference_llm_params(temperature,

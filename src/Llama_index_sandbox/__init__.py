@@ -11,6 +11,11 @@ from src.Llama_index_sandbox.utils.utils import root_directory
 from dotenv import load_dotenv
 load_dotenv()
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+warnings.filterwarnings("ignore", message="Importing .* from langchain")
+
 root_dir = root_directory()
 mev_fyi_dir = f"{root_dir}/../mev.fyi/"
 RESEARCH_PAPER_CSV = f"{mev_fyi_dir}/data/paper_details.csv"

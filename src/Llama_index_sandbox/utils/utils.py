@@ -1,20 +1,12 @@
 import csv
 import time
 import logging
-import os
 import inspect
-# import fitz
 from datetime import datetime
 from functools import wraps
-import shutil
 from pathlib import Path
 
-from google.oauth2.credentials import Credentials
-from google.oauth2.service_account import Credentials as ServiceAccountCredentials
-
-import subprocess
-
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from llama_index.legacy import OpenAIEmbedding
 from llama_index.legacy.embeddings import HuggingFaceEmbedding
 
@@ -168,17 +160,6 @@ def timeit(func):
             return func(*args, **kwargs)
 
     return wrapper
-
-
-def authenticate_service_account(service_account_file: str) -> Credentials:
-    """Authenticates using service account and returns the session."""
-
-    credentials = ServiceAccountCredentials.from_service_account_file(
-        service_account_file,
-        scopes=["https://www.googleapis.com/auth/youtube.readonly"]
-    )
-    return credentials
-
 
 def get_last_index_embedding_params():
     index_dir = f"{root_directory()}/.storage/research_pdf/"
@@ -1031,16 +1012,13 @@ def save_successful_load_to_csv(documents_details, csv_filename='docs.csv', fiel
 
 
 def get_embedding_model(embedding_model_name):
-    if embedding_model_name == "text-embedding-ada-002":
-        # embedding_model = OpenAIEmbedding(disallowed_special=())
-        embedding_model = OpenAIEmbedding()  # https://github.com/langchain-ai/langchain/issues/923 encountered the same issue (2023-11-22)
-    else:
-        embedding_model = HuggingFaceEmbedding(
-            model_name=embedding_model_name,
-            # device='cuda'
+    if embedding_model_name == "text-embedding-3-large":
+        embedding_model = OpenAIEmbedding(
+            model="text-embedding-3-large",  # This model produces 3072-dimensional vectors
+            dimensions=3072  # Explicitly set dimensions
         )
-    # else:
-    #     assert False, f"The embedding model is not supported: [{embedding_model_name}]"
+    else:
+        assert False, f"The embedding model is not supported: [{embedding_model_name}]"
     return embedding_model
 
 
@@ -1076,7 +1054,7 @@ def compute_new_entries(latest_df: pd.DataFrame, current_df: pd.DataFrame, left_
     return new_entries_df
 
 
-def load_vector_store_from_pinecone_database(delete_old_index=False, new_index=False, index_name=os.environ.get("PINECONE_INDEX_NAME", "mevfyi-cosine")):
+def load_vector_store_from_pinecone_database(delete_old_index=False, new_index=False, index_name=os.environ.get("PINECONE_INDEX_NAME", "icmfyi")):
     pc = Pinecone(
         api_key=os.environ.get("PINECONE_API_KEY")
     )
@@ -1099,7 +1077,7 @@ def load_vector_store_from_pinecone_database(delete_old_index=False, new_index=F
     return vector_store
 
 
-def load_vector_store_from_pinecone_database_legacy(index_name=os.environ.get("PINECONE_INDEX_NAME", "mevfyi-cosine")):
+def load_vector_store_from_pinecone_database_legacy(index_name=os.environ.get("PINECONE_INDEX_NAME", "icmfyi")):
     pc = Pinecone(
         api_key=os.environ.get("PINECONE_API_KEY")
     )
