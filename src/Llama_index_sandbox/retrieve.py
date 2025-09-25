@@ -10,12 +10,17 @@ from llama_index.legacy.embeddings import OpenAIEmbedding
 from llama_index.legacy.agent.react.formatter import ReActChatFormatter
 from llama_index.legacy.agent.react.output_parser import ReActOutputParser
 
-from llama_index.core.callbacks import CallbackManager
+# from llama_index.core.callbacks import CallbackManager
+from llama_index.legacy.callbacks import CallbackManager
+
 from llama_index.legacy.chat_engine.types import BaseChatEngine
 from llama_index.legacy.embeddings import HuggingFaceEmbedding
 from llama_index.legacy.indices.query.base import BaseQueryEngine
 
-from llama_index.llms.openai import OpenAI
+# from llama_index.llms.openai import OpenAI
+from llama_index.legacy.llms.openai import OpenAI
+from llama_index.legacy.llms.openai import OpenAI as LegacyOpenAI
+
 from llama_index.legacy.llms.huggingface import HuggingFaceLLM
 from llama_index.legacy.core.llms.types import ChatMessage, MessageRole
 from llama_index.legacy.memory.types import BaseMemory
@@ -44,28 +49,23 @@ def get_query_engine(index, service_context, verbose=True, similarity_top_k=5):
     """Get a response synthesizer."""
     from llama_index.legacy.response_synthesizers import get_response_synthesizer, ResponseMode
 
-    # Create a clean response synthesizer without custom templates
     response_synthesizer = get_response_synthesizer(
         response_mode=ResponseMode.COMPACT,
         service_context=service_context,
+        callback_manager=service_context.callback_manager,  # <-- be explicit
         verbose=verbose,
     )
-
-    # Use the index's as_query_engine but override the response_synthesizer
-    query_engine = index.as_query_engine(
+    return index.as_query_engine(
         similarity_top_k=similarity_top_k,
         service_context=service_context,
         verbose=verbose,
-        response_synthesizer=response_synthesizer,  # Override with clean synthesizer
+        response_synthesizer=response_synthesizer,
     )
 
-    return query_engine
-
-def get_inference_llm(llm_model_name):
-    if llm_model_name in OPENAI_INFERENCE_MODELS:
-        return OpenAI(model=llm_model_name)
-    else:
-        raise Exception("Unknown model name: {}".format(llm_model_name))
+def get_inference_llm(llm_model_name: str):
+    # map aliases if needed
+    model = {"gpt-4o-mini": "gpt-4-1106-preview"}.get(llm_model_name, llm_model_name)
+    return LegacyOpenAI(model=model, callback_manager=CallbackManager([]))
 
 
 def set_inference_llm_params(temperature,

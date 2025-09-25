@@ -1,7 +1,10 @@
 # https://gpt-index.readthedocs.io/en/stable/examples/low_level/ingestion.html
 # Credits to https://gpt-index.readthedocs.io/en/stable/examples/low_level/ingestion.html
-from llama_index import ServiceContext
+# from llama_index import ServiceContext
+from llama_index.legacy import ServiceContext
+from llama_index.legacy.callbacks import CallbackManager
 from itertools import product
+
 from typing import Tuple, Dict, Any
 
 from src.Llama_index_sandbox.constants import EVALUATION_INPUT_QUERIES
@@ -11,6 +14,33 @@ from src.Llama_index_sandbox.retrieve import get_engine_from_vector_store, ask_q
 from src.Llama_index_sandbox.index import load_index_from_disk, create_index
 from src.Llama_index_sandbox.utils import start_logging
 from src.Llama_index_sandbox import globals as glb
+
+
+from src.Llama_index_sandbox.custom_react_agent.logging_handler import JSONLoggingHandler
+
+def make_service_context(embedding_model, llm_model_name, log_name, similarity_top_k):
+    # one CM for everything
+    json_logging_handler = JSONLoggingHandler(
+        event_ends_to_ignore=[],
+        event_starts_to_ignore=[],
+        log_name=log_name,
+        similarity_top_k=similarity_top_k,
+    )
+    cm = CallbackManager(handlers=[json_logging_handler])
+
+    # LLM with CM at construction time
+    from llama_index.legacy.llms.openai import OpenAI as LegacyOpenAI
+    model = {"gpt-4o-mini": "gpt-4-1106-preview"}.get(llm_model_name, llm_model_name)
+    llm = LegacyOpenAI(model=model, callback_manager=cm)  # <-- important
+
+    # ServiceContext with the same CM
+    from llama_index.legacy.service_context import ServiceContext
+    service_context = ServiceContext.from_defaults(
+        llm=llm,
+        embed_model=embedding_model,
+        callback_manager=cm,  # <-- important
+    )d
+    return service_context, cm
 
 
 def get_or_create_index(params: Dict[str, Any]) -> Tuple[Any, ServiceContext]:
@@ -26,9 +56,16 @@ def get_or_create_index(params: Dict[str, Any]) -> Tuple[Any, ServiceContext]:
     embedding_model = params["embedding_model"]
     llm_model_name = params["llm_model_name"]
 
-    # Create the service context inside this function based on the current combination
-    llm = get_inference_llm(llm_model_name=llm_model_name)
-    service_context: ServiceContext = ServiceContext.from_defaults(llm=llm, embed_model=embedding_model)
+    llm = get_inference_llm(llm_model_name)
+    if getattr(llm, "callback_manager", None) is None:
+        llm.callback_manager = CallbackManager([])
+
+    service_context = ServiceContext.from_defaults(
+        llm=llm,
+        embed_model=embedding_model,
+        callback_manager=llm.callback_manager,  # keep it consistent
+    )
+
     recreate_index = params["recreate_index"]
     if recreate_index:
         model_details = (params["embedding_model_name"], params["text_splitter_chunk_size"], params["text_splitter_chunk_overlap_percentage"])

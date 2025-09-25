@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from typing import List, Union
 
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from llama_index.legacy.embeddings import OpenAIEmbedding, HuggingFaceEmbedding
 from llama_index.legacy.schema import TextNode
 from tiktoken.model import MODEL_TO_ENCODING
