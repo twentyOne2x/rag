@@ -100,7 +100,7 @@ class CustomReActAgent(ReActAgent):
             chat_response_copy = copy.deepcopy(chat_response)
 
             # Enforce user question into Action Input
-            response_content = chat_response_copy.raw.choices[0].message.content
+            response_content = chat_response_copy.raw['choices'][0].message.content
             # NOTE 2023-10-15: we force the input to the query engine to be the user question.
             #  Otherwise, GPT greatly simplifies the question, and the query engine does very poorly.
             import re, json
@@ -133,7 +133,7 @@ class CustomReActAgent(ReActAgent):
                     response_content = response_content.replace(action_input_part, json.dumps(action_input_json))
 
                     # Update the deep-copied chat_response accordingly
-                    chat_response_copy.raw.choices[0].message.content = response_content
+                    chat_response_copy.raw['choices'][0].message.content = response_content
                     chat_response_copy.message.content = response_content  # Update this too
                 except Exception as e:
                     logging.error(f'Error in modifying the Action Input part of the response_content: [{e}]')
@@ -186,7 +186,7 @@ class CustomReActAgent(ReActAgent):
             content=CONFIRM_FINAL_ANSWER.format(question=question, response=response, sources=sources)
         )
         chat_response = self._llm.chat([final_input])
-        final_answer = chat_response.raw.choices[0]['message']['content']
+        final_answer = chat_response.raw['choices'][0]['message']['content']
         return AgentChatResponse(response=final_answer, sources=[])
 
     @timeit

@@ -13,6 +13,7 @@ FILES=(
   "src/Llama_index_sandbox/custom_react_agent/formatter.py"
   "src/Llama_index_sandbox/custom_react_agent/logging_handler.py"
   "src/Llama_index_sandbox/custom_react_agent/output_parser.py"
+  "src/Llama_index_sandbox/evaluation/eval.py"
 
 )
 

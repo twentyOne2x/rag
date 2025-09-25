@@ -43,10 +43,10 @@ def format_metadata(response):
         if title not in title_to_metadata:
             title_to_metadata[title] = {
                 'pdf_link': meta_info.get('pdf_link', 'N/A'),
-                'release_date': meta_info.get('release_date', 'N/A'),
+                'release_date': meta_info.get('published_date', 'N/A'),
                 'channel_name': meta_info.get('channel_name', 'N/A'),
-                'video_link': meta_info.get('video_link', 'N/A'),
-                'published_date': meta_info.get('release_date', 'N/A'),
+                'url': meta_info.get('url', 'N/A'),
+                'published_date': meta_info.get('published_date', 'N/A'),
                 'chunks_count': 0,
                 'highest_score': score,
                 'is_video': is_video,
@@ -69,7 +69,7 @@ def format_metadata(response):
         f"[Title]: {title}, "
         +
         (
-         f"[Channel name]: {meta['channel_name']}, [Video Link]: {meta['video_link']}, [Published date]: {meta['published_date']}, "
+         f"[Channel name]: {meta['channel_name']}, [url]: {meta['url']}, [Release date]: {meta['release_date']}, "
          if meta['is_video'] else
          f"[Authors]: {meta['formatted_authors']}, [Link]: {meta['pdf_link']}, [Release date]: {meta['release_date']}, "
         )

@@ -259,11 +259,11 @@ def move_remaining_mp3_to_their_subdirs():
         video_row = youtube_videos_df[youtube_videos_df['title'] == best_match]
 
         if not video_row.empty:
-            published_date = video_row.iloc[0]['published_date']
-            new_dir_name = f"{published_date}_{video_title}"
+            release_date = video_row.iloc[0]['release_date']
+            new_dir_name = f"{release_date}_{video_title}"
             new_dir_path = os.path.join(os.path.dirname(mp3_file), new_dir_name)
             os.makedirs(new_dir_path, exist_ok=True)
-            new_file_name = f"{published_date}_{video_title}.mp3"
+            new_file_name = f"{release_date}_{video_title}.mp3"
             new_file_path = os.path.join(new_dir_path, new_file_name)
             print(f"Moved video {best_match} to {new_file_path}!")
             shutil.move(mp3_file, new_file_path)
@@ -299,8 +299,8 @@ def move_remaining_txt_to_their_subdirs():
         video_row = youtube_videos_df[youtube_videos_df['title'] == best_match]
 
         if not video_row.empty:
-            published_date = video_row.iloc[0]['published_date']
-            new_dir_name = f"{published_date}_{video_title}"
+            release_date = video_row.iloc[0]['release_date']
+            new_dir_name = f"{release_date}_{video_title}"
 
             # Check if txt file is already in a directory matching its name
             containing_dir = os.path.basename(os.path.dirname(txt_file))
@@ -309,7 +309,7 @@ def move_remaining_txt_to_their_subdirs():
 
             new_dir_path = os.path.join(os.path.dirname(txt_file), new_dir_name)
             os.makedirs(new_dir_path, exist_ok=True)
-            new_file_name = f"{published_date}_{video_title}{extension}"
+            new_file_name = f"{release_date}_{video_title}{extension}"
             new_file_path = os.path.join(new_dir_path, new_file_name)
             if os.path.exists(new_file_path):
                 print(f"Deleted {txt_file} because {new_file_path} already exists")
@@ -349,8 +349,8 @@ def move_remaining_json_to_their_subdirs():
         video_row = youtube_videos_df[youtube_videos_df['title'] == best_match]
 
         if not video_row.empty:
-            published_date = video_row.iloc[0]['published_date']
-            new_dir_name = f"{published_date}_{video_title}"
+            release_date = video_row.iloc[0]['release_date']
+            new_dir_name = f"{release_date}_{video_title}"
 
             # Check if json file is already in a directory matching its name
             containing_dir = os.path.basename(os.path.dirname(json_file))
@@ -359,7 +359,7 @@ def move_remaining_json_to_their_subdirs():
 
             new_dir_path = os.path.join(os.path.dirname(json_file), new_dir_name)
             os.makedirs(new_dir_path, exist_ok=True)
-            new_file_name = f"{published_date}_{video_title}{extension}"
+            new_file_name = f"{release_date}_{video_title}{extension}"
             new_file_path = os.path.join(new_dir_path, new_file_name)
             if os.path.exists(new_file_path):
                 print(f"Deleted {json_file} because {new_file_path} already exists")
