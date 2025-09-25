@@ -51,7 +51,13 @@ OPENAI_MODEL_NAME = "gpt-3.5-turbo"  #"gpt-3.5-turbo-16k-0613"  # "gpt-3.5-turbo
 # ]
 INPUT_QUERIES = [
     # — Beginner: short, friendly, fundamentals (1–16)
-
+    "what's the launchpad wars?",
+    "How is Solana DAT gonna be used in DeFi?",
+    "who's winning the launchpad war, pump, or bonk?",
+    "Should I build on Pumpfun, Believe or Bonk?",
+    "How much liquidity should I set when launching my token on Pump?",
+    "What's an FNF and how do I join one?",
+    "How does Cupsey makes his money?",
 
     "What is Solana in simple terms?",  # videos: Solana Seeker - The Web3 Mobile Evolution; A Better Internet, Built on Solana; Spotlight: Solana's Consensus
     "What is SOL used for on the Solana network?",  # videos: The State of the USDC Economy Is Strong; Solana Seeker Keynote (Emmett Hollyer); Solana Stories: Fast, Cheap, and Reliable

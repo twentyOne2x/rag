@@ -43,6 +43,8 @@ from src.Llama_index_sandbox.custom_react_agent.tools.query_engine import Custom
 from src.Llama_index_sandbox.custom_react_agent.tools.tool_output import log_and_store
 from src.Llama_index_sandbox.utils.store_response import store_response
 from src.Llama_index_sandbox.utils.utils import timeit
+from src.Llama_index_sandbox.utils.text_sanitizer import strip_meta_phrases
+
 
 
 def get_query_engine(index, service_context, verbose=True, similarity_top_k=5):
@@ -181,10 +183,16 @@ def ask_questions(input_queries, retrieval_engine, query_engine, store_response_
                     response, all_formatted_metadata = retrieval_engine.chat(message=query_str, chat_history=chat_history)
                 else:
                     response, all_formatted_metadata = retrieval_engine._llm.chat([ChatMessage(content=query_str, role="user")])
+            text_out = getattr(response, "response", response)
+            text_out = strip_meta_phrases(text_out)
+
             if not run_application:
-                logging.info(f"[End output shown to client for question [{query_str}]]:    \n```\n{response}\n```")
+                logging.info(f"[End output shown to client for question [{query_str}]]:    \n```\n{text_out}\n```")
                 if os.environ.get('ENVIRONMENT') == 'LOCAL':
-                    print_text(f"[End output shown to client for question [{query_str}]]:    \n```\n{response}\n\n Fetched based on the following sources: \n{all_formatted_metadata}\n```\n", color='green')
+                    print_text(
+                        f"[End output shown to client for question [{query_str}]]:    \n```\n{text_out}\n\n Fetched based on the following sources: \n{all_formatted_metadata}\n```\n",
+                        color='green'
+                    )
             if reset_chat:
                 logging.info(f"Resetting chat engine after question.")
                 retrieval_engine.reset()  # NOTE 2023-10-27: comment out to reset the chat after each question and see the performance, i.e. correct response given memory versus hallucination.

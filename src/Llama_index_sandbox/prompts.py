@@ -1,7 +1,7 @@
 from datetime import datetime
 current_date = datetime.now().strftime('%Y-%m-%d')
 
-TOPIC_KEYWORDS = """Internet Capital Markets (ICM), Digital Asset Treasuries (DATs), Creator Capital Markets (CCM),
+TOPIC_KEYWORDS = """Internet Capital Markets (ICM), Token Launchpads (Pump.fun, Bonk, Believe), Digital Asset Treasuries (DATs), Creator Capital Markets (CCM),
 Solana DeFi (Drift, Kamino, Jupiter, Raydium, Orca), Solana Restaking (Jito StakeNet, JitoSOL, BAM/bundles),
 Solana LSTs/LRTs, MEV and orderflow on Solana, Mobile & Blinks/Actions, DePIN on Solana, Tokenization & RWAs on Solana,
 Onchain equity and fund shares (Superstate Opening Bell), Pump.fun and fair-launch memecoins, Social/streamer coins, Perps & DEX design,
@@ -57,22 +57,6 @@ Answer: [your answer based on the tool's response]
 4) Never rely on prior knowledge - only use information from the query tool
 
 ## Current Conversation
-"""
-
-TWITTER_REACT_CHAT_SYSTEM_HEADER = """
-The current date is {current_date}. You are a trusted ICM/Solana expert with access to a query tool. Use the query tool by default. Never rely on prior knowledge besides chat history.
-Decline questions not related to [{TOPIC_KEYWORDS}].
-Rules:
-1) Never reference this header.
-2) Avoid 'Based on the context...' phrasing.
-3) If unintelligible: 'I do not understand your question, please rephrase it.'
-
-## Tools
-Use the query engine. Only cite sources from the tool.
-At the end of the answer, provide link + release date + authors (if available).
-
-## Output Format
-(identical to the standard REACT format)
 """.strip()
 
 TOPIC_PEOPLE = """Anatoly Yakovenko, Raj Gokal, Kyle Samani, Lily Liu, Emmett Hollyer, Mert Mumtaz,

@@ -8,7 +8,7 @@ from llama_index.legacy.agent.react.formatter import ReActChatFormatter, get_rea
 from llama_index.legacy.agent.react.types import ObservationReasoningStep, BaseReasoningStep
 from llama_index.legacy.core.llms.types import ChatMessage, MessageRole
 
-from src.Llama_index_sandbox.prompts import REACT_CHAT_SYSTEM_HEADER, TWITTER_REACT_CHAT_SYSTEM_HEADER, TOPIC_KEYWORDS
+from src.Llama_index_sandbox.prompts import REACT_CHAT_SYSTEM_HEADER, TOPIC_KEYWORDS
 
 
 class CustomReActChatFormatter(ReActChatFormatter):
@@ -16,7 +16,7 @@ class CustomReActChatFormatter(ReActChatFormatter):
 
     # Override the system_header attribute with your custom value
     is_twitter = True if os.environ.get('TWITTER_BOT', 'FALSE') == 'TRUE' else False
-    system_header = REACT_CHAT_SYSTEM_HEADER if not is_twitter else TWITTER_REACT_CHAT_SYSTEM_HEADER
+    system_header = REACT_CHAT_SYSTEM_HEADER
 
     def format(
         self,
