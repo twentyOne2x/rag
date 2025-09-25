@@ -1,7 +1,9 @@
 # https://gpt-index.readthedocs.io/en/stable/examples/low_level/ingestion.html
 # Credits to https://gpt-index.readthedocs.io/en/stable/examples/low_level/ingestion.html
 import logging
-import os
+import os, sys
+from src.Llama_index_sandbox.utils.logging_setup import configure_logging
+from src.Llama_index_sandbox import root_dir
 from llama_index.legacy import ServiceContext
 
 import src.Llama_index_sandbox.utils.utils
@@ -10,11 +12,11 @@ from src.Llama_index_sandbox.constants import INPUT_QUERIES
 from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_query_engine import CustomQueryEngine
 from src.Llama_index_sandbox.utils.gcs_utils import set_secrets_from_cloud
 from src.Llama_index_sandbox.retrieve import get_engine_from_vector_store, ask_questions, get_inference_llm
-from src.Llama_index_sandbox.utils.utils import start_logging, get_last_index_embedding_params, copy_and_verify_files
+from src.Llama_index_sandbox.utils.utils import start_logging, get_last_index_embedding_params
 from src.Llama_index_sandbox.index import load_index_from_disk
 
 
-def initialise_chatbot(engine, query_engine_as_tool, recreate_index, add_new_transcripts=False):
+def initialise_chatbot(engine, query_engine_as_tool):
     stream = True
     num_files = config_instance.num_files
     similarity_top_k = config_instance.NUM_CHUNKS_SEARCHED_FOR_RERANKING[0]
@@ -32,11 +34,8 @@ def initialise_chatbot(engine, query_engine_as_tool, recreate_index, add_new_tra
 
     start_logging(f"create_index_{embedding_model_name.split('/')[-1]}_{llm_model_name}_{text_splitter_chunk_size}_{text_splitter_chunk_overlap_percentage}_{similarity_top_k}")
     index_embedding_model_name, index_text_splitter_chunk_size, index_chunk_overlap, vector_space_distance_metric = get_last_index_embedding_params()
-    logging.info(f"recreate_index: {recreate_index}, index_embedding_model_name={index_embedding_model_name}, index_text_splitter_chunk_size={index_text_splitter_chunk_size}, index_chunk_overlap={index_chunk_overlap}, vector_space_distance_metric={vector_space_distance_metric}")
+    logging.info(f"index_embedding_model_name={index_embedding_model_name}, index_text_splitter_chunk_size={index_text_splitter_chunk_size}, index_chunk_overlap={index_chunk_overlap}, vector_space_distance_metric={vector_space_distance_metric}")
     logging.info(f"index_embedding_model_name: {index_embedding_model_name}, index_text_splitter_chunk_size: {index_text_splitter_chunk_size}, index_chunk_overlap: {index_chunk_overlap}, vector_space_distance_metric: {vector_space_distance_metric}")
-    if (not recreate_index) and ((index_embedding_model_name != embedding_model_name.split('/')[-1]) or (index_text_splitter_chunk_size != text_splitter_chunk_size) or (index_chunk_overlap != text_splitter_chunk_overlap_percentage)):
-        logging.error(f"The new embedding model parameters are different from the last ones and we are not recreating the index. Do you want to recreate the index or to revert parameters back?")
-        assert False
 
     index = load_index_from_disk(service_context)
 
@@ -60,6 +59,8 @@ def initialise_chatbot(engine, query_engine_as_tool, recreate_index, add_new_tra
 
 
 def run():
+    log_path = os.path.join(root_dir, "logs", "run.log")
+    configure_logging(log_path)
     if not os.environ.get('ENVIRONMENT') == 'LOCAL':
         set_secrets_from_cloud()
     CustomQueryEngine.load_or_compute_weights(document_weight_mappings=CustomQueryEngine.document_weight_mappings,
@@ -69,23 +70,15 @@ def run():
                                               recompute_weights=True)
     engine = 'chat'
     query_engine_as_tool = True
-    recreate_index = False
-    if recreate_index:
-        copy_and_verify_files()
-        add_new_transcripts = True
-    else:
-        add_new_transcripts = False
     chat_history = []
 
     logging.info(f"Run parameters: engine={engine}, query_engine_as_tool={query_engine_as_tool}")
 
     retrieval_engine, query_engine, store_response_partial, config_instance = initialise_chatbot(engine=engine,
-                                                                                                 query_engine_as_tool=query_engine_as_tool,
-                                                                                                 recreate_index=recreate_index,
-                                                                                                 add_new_transcripts=add_new_transcripts)
+                                                                                                 query_engine_as_tool=query_engine_as_tool)
 
 
-    ask_questions(input_queries=INPUT_QUERIES[:20], retrieval_engine=retrieval_engine, query_engine=query_engine,
+    ask_questions(input_queries=INPUT_QUERIES[:5], retrieval_engine=retrieval_engine, query_engine=query_engine,
                   store_response_partial=store_response_partial, engine=engine, query_engine_as_tool=query_engine_as_tool, chat_history=chat_history, reset_chat=config_instance.reset_chat)
     return retrieval_engine
 

@@ -6,9 +6,9 @@ from src.Llama_index_sandbox import root_directory, root_dir
 
 def parse_old_json_format():
     # Define the path to your original file. Please make sure this path is correct.
-    original_file_path = f'{root_directory()}/datasets/golden_source_logs/2023-10-20_14:32:07.log.json'
+    original_file_path = f'{root_dir}/datasets/golden_source_logs/2023-10-20_14:32:07.log.json'
     # Define the path for your new subdirectory.
-    subdirectory_path = f'{root_directory()}/datasets/golden_source_logs/parsed_jsons'
+    subdirectory_path = f'{root_dir}/datasets/golden_source_logs/parsed_jsons'
 
     # Check if the subdirectory does not exist.
     if not os.path.exists(subdirectory_path):
@@ -150,7 +150,7 @@ def parse_2023_10_24_json_format(raw_json_log_path=None):
         print("Could not retrieve the file.")
 
     # Define the path for your new subdirectory.
-    subdirectory_path = f'{root_directory()}/datasets/golden_source_logs/parsed_jsons'
+    subdirectory_path = f'{root_dir}/datasets/golden_source_logs/parsed_jsons'
 
     # Check if the subdirectory does not exist.
     if not os.path.exists(subdirectory_path):

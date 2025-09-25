@@ -22,6 +22,54 @@ from src.Llama_index_sandbox.utils.utils import timeit
 from llama_index.core.base.llms.types import ChatMessage as CoreChatMessage
 from llama_index.legacy.core.llms.types import ChatMessage as LegacyChatMessage
 
+def _extract_json_object_after(text: str, label: str) -> tuple[Optional[str], Optional[tuple[int, int]]]:
+    """
+    Return (json_str, (start, end)) for the first balanced JSON object after `label`.
+    If not found, returns (None, None).
+    """
+    idx = text.find(label)
+    if idx == -1:
+        return None, None
+
+    i = idx + len(label)
+    n = len(text)
+
+    # skip whitespace
+    while i < n and text[i].isspace():
+        i += 1
+
+    if i >= n or text[i] != "{":
+        return None, None
+
+    start = i
+    depth = 0
+    in_string = False
+    esc = False
+
+    for j in range(i, n):
+        ch = text[j]
+        if in_string:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    return text[start:end], (start, end)
+
+    return None, None
+
+
+
 def ensure_core_chat_messages(messages):
     """Convert messages to core ChatMessage format."""
     converted = []

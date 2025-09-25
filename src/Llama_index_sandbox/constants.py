@@ -44,12 +44,12 @@ OPENAI_INFERENCE_MODELS = ["gpt-4o-mini", "gpt-3.5-turbo-0125", "gpt-4", "gpt-4-
 
 
 OPENAI_MODEL_NAME = "gpt-3.5-turbo"  #"gpt-3.5-turbo-16k-0613"  # "gpt-3.5-turbo-0613"  # "gpt-4" # "gpt-3.5-turbo-0613"  # "gpt-4-0613"  # "gpt-3.5-turbo-0613"
+# INPUT_QUERIES = [
+#     "How does Cupsey make money?",
+#     "What is a DAT as per Kyle Samani?",
+#     "What's Pump.fun long term vision?"
+# ]
 INPUT_QUERIES = [
-    "How does Cupsey make money?",
-    "What is a DAT as per Kyle Samani?",
-    "What's Pump.fun long term vision?"
-]
-INPUT_QUERIES_test = [
     # — Beginner: short, friendly, fundamentals (1–16)
 
 
@@ -62,7 +62,6 @@ INPUT_QUERIES_test = [
     "What’s the difference between a DEX and a CEX on Solana?",  # videos: The OG of Solana DeFi | Orca; Coinbase & DeFi; DRIFT: Building a Composite CEX-DEX Experience
     "What are Raydium and Orca, and what can I do with them?",  # videos: The OG of Solana DeFi | Orca; Does DEX Liquidity Need a Defense Layer?; Adapting DEX Aggregation to Solana
     "What is slippage and why does it matter when trading on Solana?",  # videos: How to SELL Your MEMECOINS for MAX PROFIT!! w/ Ansem; On-Chain Liquidity: The Past, Present and Future
-    "What is an airdrop, and how do people qualify on Solana?",  # videos: The Infinite-LST Future w/ FP Lee; Solana Incubator Cohort 2 Demo Day; Jupiter (Breakpoint 2024)
     "What are Solana Actions and Blinks, and why do people use them?",  # videos: Solana Actions and Blinks; What Are You Building? with Dialect; In the Blink of an Eye (Chris Osborn)
     "What is Jito and how can it improve my transaction experience?",  # videos: Solana Validator Education - Jito Relayer Setup; The State of Solana MEV; Jito StakeNet: A Protocol for Timeless LSTs
     "What is an AMM, explained like I’m new to DeFi?",  # videos: The Phoenix Rises: Why Active Liquidity Enables Sustainable Markets; Widening the Design Space of AMMs with Solana; What Are You Building? with Orca

@@ -20,8 +20,12 @@ from src.Llama_index_sandbox import globals as glb
 # Snapshot of current index/embedding params (used only for logging metadata)
 embedding_model_name, text_splitter_chunk_size, chunk_overlap, _ = get_last_index_embedding_params()
 
+
+# --------------------------- Helpers -----------------------------------------
+
 def _safe_mkdir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
 
 def _first_system_text(messages: List[Any]) -> Optional[str]:
     if not messages:
@@ -31,6 +35,7 @@ def _first_system_text(messages: List[Any]) -> Optional[str]:
         return msg0.content if getattr(msg0, "role", None) == MessageRole.SYSTEM else None
     except Exception:
         return None
+
 
 def _last_user_text(messages: List[Any]) -> Optional[str]:
     if not messages:
@@ -42,6 +47,40 @@ def _last_user_text(messages: List[Any]) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _ascii_preview(value: Any, max_len: int = 300) -> str:
+    """
+    Compact, ASCII-safe preview for console logs.
+    Truncates and replaces non-ASCII characters so latin-1 consoles won't crash.
+    """
+    try:
+        s = str(value)
+    except Exception:
+        s = repr(value)
+    if len(s) > max_len:
+        s = s[:max_len] + "…"
+    return s.encode("ascii", "replace").decode("ascii")
+
+
+def _summarize_entry_for_console(event_label: str, entry: Dict[str, Any]) -> str:
+    """
+    Produce a short, ASCII-safe one-liner for console logging.
+    Shows keys and tiny previews of the noisiest fields.
+    """
+    try:
+        keys = ", ".join(sorted(entry.keys()))
+    except Exception:
+        keys = "(unavailable)"
+    previews: List[str] = []
+    for k in ("tool_output", "instructions", "retrieved_chunk", "LLM_response", "LLM_input", "user_raw_input"):
+        if k in entry and entry[k] is not None:
+            previews.append(f"{k}={_ascii_preview(entry[k])}")
+    preview_str = " | ".join(previews[:3])  # keep it short
+    return f"{event_label}: keys=[{keys}]{(' | ' + preview_str) if preview_str else ''}"
+
+
+# --------------------- JSONLoggingHandler ------------------------------------
 
 class JSONLoggingHandler(BaseCallbackHandler):
     """Legacy callback handler that emits structured JSON logs."""
@@ -63,14 +102,16 @@ class JSONLoggingHandler(BaseCallbackHandler):
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.log_file = f"{root_dir}/logs/json/{ts}_{log_name}_{similarity_top_k}.json"
 
-        with open(self.log_file, "w") as f:
-            json.dump(self.current_logs, f)
+        # Always write JSON as UTF-8, preserving Unicode characters
+        with open(self.log_file, "w", encoding="utf-8") as f:
+            json.dump(self.current_logs, f, ensure_ascii=False)
 
     # ---- Internal helpers -------------------------------------------------
 
     def _rewrite_log_file(self) -> None:
-        with open(self.log_file, "w") as f:
-            json.dump(self.current_logs, f, indent=4)
+        # ✅ ensure UTF-8 when rewriting the log file and keep Unicode as-is
+        with open(self.log_file, "w", encoding="utf-8") as f:
+            json.dump(self.current_logs, f, indent=4, ensure_ascii=False)
 
     def _append_entry(self, entry: Dict[str, Any]) -> None:
         if not entry:
@@ -152,7 +193,9 @@ class JSONLoggingHandler(BaseCallbackHandler):
                 elif TEXT_QA_SYSTEM_PROMPT.content in last_user:
                     has_expected_text = True
                 if not has_expected_text:
-                    logging.debug("Q&A system prompt not found in SYSTEM role; assuming it is inlined in USER message.")
+                    logging.debug(
+                        "Q&A system prompt not found in SYSTEM role; assuming it is inlined in USER message."
+                    )
                 entry = {"event_type": f"{event_type.name} start", "tool_output": last_user}
 
             elif last_user:
@@ -167,22 +210,30 @@ class JSONLoggingHandler(BaseCallbackHandler):
 
         elif event_type == CBEventType.FUNCTION_CALL:
             entry = {"event_type": f"{event_type.name} start", "function_call": []}
+            # when starting a function call section, open a new sublist
             self.current_logs.append(entry)
             self._rewrite_log_file()
             self.current_section = entry["function_call"]
-            logging.info(f"on_event_start: {entry}")
+            # compact, ASCII-safe console line
+            logging.info(_summarize_entry_for_console("on_event_start", entry))
             return eid  # already appended & section set
 
         elif event_type == CBEventType.TEMPLATING:
             template_vars = payload.get(EventPayload.TEMPLATE_VARS, {}) or {}
             template = payload.get(EventPayload.TEMPLATE, "") or ""
-            entry = {"event_type": f"{event_type.name} start", "instructions": template, "retrieved_chunk": template_vars}
+            entry = {
+                "event_type": f"{event_type.name} start",
+                "instructions": template,
+                "retrieved_chunk": template_vars,
+            }
 
         else:
             logging.info(f"WARNING: on_event_start: unhandled event_type {event_type.name}")
 
+        # persist full entry to JSON
         self._append_entry(entry)
-        logging.info(f"on_event_start: {entry}")
+        # print compact preview to console
+        logging.info(_summarize_entry_for_console("on_event_start", entry))
         return eid
 
     def on_event_end(
@@ -211,9 +262,15 @@ class JSONLoggingHandler(BaseCallbackHandler):
                 if content.startswith("Thought: I need to use a tool to help me answer the question."):
                     entry = {"event_type": f"{event_type.name} end", "LLM_response": content}
                 else:
-                    entry = {"event_type": f"{event_type.name} end", "LLM_response": content, "subjective_grade_1_to_10": ""}
+                    entry = {
+                        "event_type": f"{event_type.name} end",
+                        "LLM_response": content,
+                        "subjective_grade_1_to_10": "",
+                    }
             else:
-                logging.info(f"WARNING: on_event_end: {event_type.name} assistant message not found; skipping detailed log.")
+                logging.info(
+                    f"WARNING: on_event_end: {event_type.name} assistant message not found; skipping detailed log."
+                )
 
         elif event_type == CBEventType.FUNCTION_CALL:
             entry = {
@@ -229,8 +286,10 @@ class JSONLoggingHandler(BaseCallbackHandler):
         else:
             logging.info(f"WARNING: on_event_end: unhandled event_type {event_type.name}")
 
+        # persist full entry to JSON
         self._append_entry(entry)
-        logging.info(f"on_event_end: {entry}")
+        # print compact preview to console
+        logging.info(_summarize_entry_for_console("on_event_end", entry))
 
     def start_trace(self, trace_id: Optional[str] = None) -> None:
         return

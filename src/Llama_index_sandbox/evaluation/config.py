@@ -3,11 +3,8 @@ from itertools import product
 import os
 
 import src.Llama_index_sandbox.utils.utils
-from src.Llama_index_sandbox import embed
-import src.Llama_index_sandbox.evaluation.evaluation_constants as config
-from src.Llama_index_sandbox.utils.utils import get_last_index_embedding_params, root_directory
+from src.Llama_index_sandbox.utils.utils import get_last_index_embedding_params, root_dir
 
-root_dir = root_directory()
 index_dir = f"{root_dir}/.storage/research_pdf/"
 
 
