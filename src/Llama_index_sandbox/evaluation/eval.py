@@ -30,8 +30,9 @@ def make_service_context(embedding_model, llm_model_name, log_name, similarity_t
 
     # LLM with CM at construction time
     from llama_index.llms.openai import OpenAI as CoreOpenAI
-    model = {"gpt-4o-mini": "gpt-4-1106-preview"}.get(llm_model_name, llm_model_name)
-    llm = CoreOpenAI(model=model, callback_manager=cm)  # <-- important
+
+    model = llm_model_name  # no remapping
+    llm = CoreOpenAI(model=model, callback_manager=cm)
 
     # ServiceContext with the same CM
     service_context = ServiceContext.from_defaults(
