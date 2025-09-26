@@ -5,10 +5,16 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-# ✅ Use ONLY legacy callback interfaces/types
-from llama_index.legacy.callbacks.base import BaseCallbackHandler
-from llama_index.legacy.callbacks.schema import CBEventType, EventPayload
-from llama_index.legacy.llms import MessageRole
+# ✅ Use ONLY core callback interfaces/types
+from llama_index.core.callbacks.base import BaseCallbackHandler
+from llama_index.core.callbacks.schema import CBEventType, EventPayload
+
+# MessageRole (core)
+try:
+    from llama_index.core.llms import MessageRole
+except ImportError:
+    # Fallback for some 0.10.x subversions
+    from llama_index.core.base.llms.types import MessageRole  # type: ignore
 
 from src.Llama_index_sandbox import root_dir
 from src.Llama_index_sandbox.custom_react_agent.callbacks.schema import ExtendedEventPayload
@@ -74,7 +80,7 @@ def _summarize_entry_for_console(event_label: str, entry: Dict[str, Any]) -> str
         keys = "(unavailable)"
     previews: List[str] = []
     for k in ("tool_output", "instructions", "retrieved_chunk", "LLM_response", "LLM_input", "user_raw_input"):
-        if k in entry and entry[k] is not None:
+        if k in entry and k is not None and entry[k] is not None:
             previews.append(f"{k}={_ascii_preview(entry[k])}")
     preview_str = " | ".join(previews[:3])  # keep it short
     return f"{event_label}: keys=[{keys}]{(' | ' + preview_str) if preview_str else ''}"
@@ -83,7 +89,7 @@ def _summarize_entry_for_console(event_label: str, entry: Dict[str, Any]) -> str
 # --------------------- JSONLoggingHandler ------------------------------------
 
 class JSONLoggingHandler(BaseCallbackHandler):
-    """Legacy callback handler that emits structured JSON logs."""
+    """Callback handler that emits structured JSON logs."""
 
     def __init__(
         self,
@@ -92,7 +98,7 @@ class JSONLoggingHandler(BaseCallbackHandler):
         log_name: str,
         similarity_top_k: int,
     ) -> None:
-        # ✅ FIX 1: pass required args to base class
+        # ✅ pass required args to base class
         super().__init__(event_starts_to_ignore, event_ends_to_ignore)
 
         self.current_section: Optional[List[Dict[str, Any]]] = None
@@ -155,7 +161,7 @@ class JSONLoggingHandler(BaseCallbackHandler):
         parent_id: str = "",
         **kwargs: Any,
     ) -> str:
-        # ✅ FIX 2: ensure we return an id
+        # ✅ ensure we return an id
         eid = event_id or str(uuid.uuid4())
 
         if event_type in self.event_starts_to_ignore:

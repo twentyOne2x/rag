@@ -1,32 +1,31 @@
-from abc import ABC
+# src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_vector_store_index.py
+
+from __future__ import annotations
+
 from typing import Any
 
-from llama_index.legacy import VectorStoreIndex
-from llama_index.legacy.indices.query.base import BaseQueryEngine
+# ✅ Core-only import
+from llama_index.core import VectorStoreIndex
 
-from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_query_engine import CustomQueryEngine
+from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_query_engine import (
+    CustomQueryEngine,
+)
 
 
 class CustomVectorStoreIndex(VectorStoreIndex):
+    """
+    Core-native VectorStoreIndex subclass that returns our CustomQueryEngine.
+    We build a core retriever directly and pass it to CustomQueryEngine.
+    """
 
-    def as_query_engine(self, **kwargs: Any) -> BaseQueryEngine:
-        retriever = self.as_retriever(**kwargs)
+    def as_query_engine(self, **kwargs: Any) -> CustomQueryEngine:
+        # Build a core retriever (lets caller pass similarity_top_k, filters, etc. via kwargs)
+        retriever = super().as_retriever(**kwargs)
 
-        kwargs["retriever"] = retriever
-        if "service_context" not in kwargs:
-            kwargs["service_context"] = self._service_context
-        return CustomQueryEngine.from_args(**kwargs)
+        # Try to pass a callback_manager if present on the index
+        callback_manager = getattr(self, "callback_manager", None)
 
-    @classmethod
-    def from_vector_store_index(cls, vector_store_index):
-        # Create a new instance of CustomVectorStoreIndex using the attributes of vector_store_index
-        return cls(
-            nodes=getattr(vector_store_index, '_nodes', None),
-            index_struct=getattr(vector_store_index, '_index_struct', None),
-            service_context=getattr(vector_store_index, '_service_context', None),
-            storage_context=getattr(vector_store_index, '_storage_context', None),
-            use_async=getattr(vector_store_index, '_use_async', False),
-            store_nodes_override=getattr(vector_store_index, '_store_nodes_override', False),
-            show_progress=getattr(vector_store_index, '_show_progress', False),
-            # Include other relevant attributes if there are any
+        return CustomQueryEngine(
+            retriever=retriever,
+            callback_manager=callback_manager,
         )

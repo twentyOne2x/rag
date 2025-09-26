@@ -1,39 +1,41 @@
 import logging
 import os
-import time
 from functools import partial
 from typing import Optional, Type, Union
 
-from llama_index.legacy.indices.service_context import ServiceContext
-from llama_index.legacy.embeddings import OpenAIEmbedding
+# ---- Core-first imports (no ServiceContext) ----
+from llama_index.core import Settings
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from llama_index.legacy.agent.react.formatter import ReActChatFormatter
-from llama_index.legacy.agent.react.output_parser import ReActOutputParser
+from llama_index.core.callbacks import CallbackManager
 
-# from llama_index.core.callbacks import CallbackManager
-from llama_index.legacy.callbacks import CallbackManager
+# Chat/query engine base types
+try:
+    from llama_index.core.chat_engine.types import BaseChatEngine
+except ImportError:
+    class BaseChatEngine:  # type: ignore
+        pass
 
-from llama_index.legacy.chat_engine.types import BaseChatEngine
-from llama_index.legacy.embeddings import HuggingFaceEmbedding
-from llama_index.legacy.indices.query.base import BaseQueryEngine
+from llama_index.llms.openai import OpenAI
 
-# from llama_index.llms.openai import OpenAI
-from llama_index.legacy.llms.openai import OpenAI
-from llama_index.legacy.llms.openai import OpenAI as LegacyOpenAI
+# Core LLM types
+from llama_index.core.llms import ChatMessage, MessageRole
 
-from llama_index.legacy.llms.huggingface import HuggingFaceLLM
-from llama_index.legacy.core.llms.types import ChatMessage, MessageRole
-from llama_index.legacy.memory.types import BaseMemory
-from llama_index.legacy.memory.chat_memory_buffer import ChatMemoryBuffer
-from llama_index.core.prompts.default_prompts import DEFAULT_SIMPLE_INPUT_PROMPT
-from llama_index.legacy.utils import print_text
+# Core memory
+from llama_index.core.memory import BaseMemory, ChatMemoryBuffer
 
-from src.Llama_index_sandbox.config import MAX_CONTEXT_LENGTHS
-from src.Llama_index_sandbox.constants import OPENAI_MODEL_NAME, LLM_TEMPERATURE, NUMBER_OF_CHUNKS_TO_RETRIEVE, OPENAI_INFERENCE_MODELS
+from llama_index.core.utils import print_text
+
+from src.Llama_index_sandbox.constants import (
+    LLM_TEMPERATURE,
+)
 from src.Llama_index_sandbox.custom_react_agent.logging_handler import JSONLoggingHandler
-# from src.Llama_index_sandbox.custom_react_agent.tools.default_prompt_selectors import DEFAULT_TEXT_QA_PROMPT_SEL, DEFAULT_REFINE_PROMPT_SEL, DEFAULT_TREE_SUMMARIZE_PROMPT_SEL
 from src.Llama_index_sandbox.custom_react_agent.tools.reranker.custom_vector_store_index import CustomVectorStoreIndex
-from src.Llama_index_sandbox.prompts import SYSTEM_MESSAGE, QUERY_TOOL_RESPONSE, QUERY_ENGINE_TOOL_DESCRIPTION
+from src.Llama_index_sandbox.prompts import (
+    QUERY_TOOL_RESPONSE,
+    QUERY_ENGINE_TOOL_DESCRIPTION,
+)
 from src.Llama_index_sandbox.custom_react_agent.ReActAgent import CustomReActAgent
 from src.Llama_index_sandbox.custom_react_agent.formatter import CustomReActChatFormatter
 from src.Llama_index_sandbox.custom_react_agent.output_parser import CustomReActOutputParser
@@ -46,102 +48,132 @@ from src.Llama_index_sandbox.utils.utils import timeit
 from src.Llama_index_sandbox.utils.text_sanitizer import strip_meta_phrases
 
 
+# ----------------------- Query Engine Helpers -----------------------
 
-def get_query_engine(index, service_context, verbose=True, similarity_top_k=5):
-    """Get a response synthesizer."""
-    from llama_index.legacy.response_synthesizers import get_response_synthesizer, ResponseMode
+def get_query_engine(index, verbose: bool = True, similarity_top_k: int = 5):
+    """Create a query engine with a compact response synthesizer (core APIs)."""
+    from llama_index.core.response_synthesizers import (
+        get_response_synthesizer,
+        ResponseMode,
+    )
 
     response_synthesizer = get_response_synthesizer(
         response_mode=ResponseMode.COMPACT,
-        service_context=service_context,
-        callback_manager=service_context.callback_manager,  # <-- be explicit
         verbose=verbose,
     )
     return index.as_query_engine(
         similarity_top_k=similarity_top_k,
-        service_context=service_context,
         verbose=verbose,
         response_synthesizer=response_synthesizer,
     )
 
+
 def get_inference_llm(llm_model_name: str):
-    # map aliases if needed
-    model = {"gpt-4o-mini": "gpt-4-1106-preview"}.get(llm_model_name, llm_model_name)
-    return LegacyOpenAI(model=model, callback_manager=CallbackManager([]))
+    """
+    Return a core OpenAI LLM instance. No legacy remaps.
+    Let model availability errors surface, or handle upstream.
+    """
+    return OpenAI(model=llm_model_name, callback_manager=CallbackManager([]))
 
 
-def set_inference_llm_params(temperature,
-                      service_context,
-                      # llm,
-                      stream=False,
-                      callback_manager: Optional[CallbackManager] = None,
-                      max_tokens: Optional[int] = None,
-                      ):
-    llm = service_context.llm
-    if isinstance(llm, OpenAI):
+def set_inference_llm_params(
+    temperature: float,
+    stream: bool = False,
+    callback_manager: Optional[CallbackManager] = None,
+    max_tokens: Optional[int] = None,
+    llm: Optional[OpenAI] = None,
+):
+    """
+    Configure the LLM in-place. Defaults to Settings.llm if 'llm' is not passed.
+    """
+    llm = llm or Settings.llm
+    if hasattr(llm, "temperature"):
         llm.temperature = temperature
+    if callback_manager is not None and hasattr(llm, "callback_manager"):
         llm.callback_manager = callback_manager
+    if max_tokens is not None and hasattr(llm, "max_tokens"):
         llm.max_tokens = max_tokens
-        # llm.model = OPENAI_MODEL_NAME
-        # llm.stream = stream TODO 2023-10-17: determine where to set stream bool
-        # if callback_manager is not None:
-        #     llm.callback_manager = callback_manager
-    else:
-        llm.temperature = temperature
-        llm.max_new_tokens = max_tokens  # TODO 2023-10-29: TBD what to set here
-        llm.context_window = MAX_CONTEXT_LENGTHS[llm.model_name]
+    # If you adopt a streaming path later, wire it here (varies by LLM impl).
     return llm
 
 
-def get_chat_engine(index: CustomVectorStoreIndex,
-                    service_context: ServiceContext,
-                    query_engine_as_tool: bool,
-                    stream: bool,
-                    log_name: str,
-                    chat_mode: str = "react",
-                    verbose: bool = True,
-                    similarity_top_k: int = 5,
-                    max_iterations: int = 10,
-                    memory: Optional[BaseMemory] = None,
-                    memory_cls: Type[BaseMemory] = ChatMemoryBuffer,
-                    temperature=LLM_TEMPERATURE):
-    # NOTE 2023-09-29: creating a (react) chat engine from an index transforms that
-    #  query as a tool and passes it to the agent under the hood. That query tool can receive a description.
-    #  We need to determine (1) if we pass several query engines as tool or build a massive single one (cost TBD),
-    #  and (2) if we pass a description to the query tool and what is the expected retrieval impact from having a description versus not.
+# ----------------------- Chat Engine Factory -----------------------
 
+def get_chat_engine(
+    index: CustomVectorStoreIndex,
+    query_engine_as_tool: bool,
+    stream: bool,
+    log_name: str,
+    chat_mode: str = "react",
+    verbose: bool = True,
+    similarity_top_k: int = 5,
+    max_iterations: int = 10,
+    memory: Optional[BaseMemory] = None,
+    memory_cls: Type[BaseMemory] = ChatMemoryBuffer,
+    temperature: float = LLM_TEMPERATURE,
+):
+    """
+    Builds your ReAct-style chat engine, wiring the query engine as a tool when requested.
+    Uses global Settings for LLM/embeddings (no ServiceContext).
+    """
     logging.info(f"Fetching query engine tool from index object # [{index}]")
-    query_engine = get_query_engine(index=index, service_context=service_context, verbose=verbose, similarity_top_k=similarity_top_k)
-    logging.info(f"Successfully instantiated the query engine!")
-    # NOTE 2023-10-14: the description assigned to query_engine_tool should have extra scrutiny as it is passed as is to the agent
-    #  and the agent formats it into the react_chat_formatter to determine whether to perform an action with the tool or respond as is.
-    # NOTE 2023-10-15: It is unclear how GPT exactly interprets the fn_schema, it is difficult to have a consistent result. Usually GPT greatly
-    #  simplifies the query sent to the query engine tool, and the query engine does very poorly. We force the input to the query engine to be the user question.
+    query_engine = get_query_engine(index=index, verbose=verbose, similarity_top_k=similarity_top_k)
+    logging.info("Successfully instantiated the query engine!")
+
     query_engine_tool = CustomQueryEngineTool.from_defaults(query_engine=query_engine)
     query_engine_tool.metadata.description = QUERY_ENGINE_TOOL_DESCRIPTION
     query_engine_tool.metadata.fn_schema = ToolFnSchema
-    react_chat_formatter: Optional[ReActChatFormatter] = CustomReActChatFormatter(tools=[query_engine_tool])
 
-    output_parser: Optional[ReActOutputParser] = CustomReActOutputParser()
-    # callback_manager: Optional[CallbackManager] = None  # NOTE 2023-10-06: to configure
+    react_chat_formatter = CustomReActChatFormatter(tools=[query_engine_tool])
+    output_parser = CustomReActOutputParser()
 
-    logging_event_ends_to_ignore = []
-    logging_event_starts_to_ignore = []
-    json_logging_handler = JSONLoggingHandler(event_ends_to_ignore=logging_event_ends_to_ignore, event_starts_to_ignore=logging_event_starts_to_ignore, log_name=log_name, similarity_top_k=similarity_top_k)
-    # Instantiate the CallbackManager and add the handlers
+    # JSON logging
+    json_logging_handler = JSONLoggingHandler(
+        event_ends_to_ignore=[],
+        event_starts_to_ignore=[],
+        log_name=log_name,
+        similarity_top_k=similarity_top_k,
+    )
     callback_manager = CallbackManager(handlers=[json_logging_handler])
 
-    chat_history = []
+    # Cap tokens to control costs unless explicitly overridden
+    max_tokens_env = os.environ.get("LLM_MAX_TOKENS", "600")
+    try:
+        max_tokens_cap = int(max_tokens_env)
+    except ValueError:
+        max_tokens_cap = 600
 
-    max_tokens: Optional[int] = None  # NOTE 2023-10-05: tune timeout and max_tokens
-    # TODO 2023-10-15: determine where to set stream bool
-    llm = set_inference_llm_params(temperature=temperature, stream=stream, callback_manager=callback_manager, max_tokens=max_tokens, service_context=service_context)
-    # service_context.llm_predictor.llm = llm
-    memory = memory or memory_cls.from_defaults(chat_history=chat_history, llm=llm)
+    # Configure LLM in Settings
+    llm = set_inference_llm_params(
+        temperature=temperature,
+        stream=stream,
+        callback_manager=callback_manager,
+        max_tokens=max_tokens_cap,
+        llm=Settings.llm,
+    )
 
-    if query_engine_as_tool:
-        return CustomReActAgent.from_tools(
-            tools=[query_engine_tool],
+    # Memory
+    memory = memory or memory_cls.from_defaults(chat_history=[], llm=llm)
+
+    # ⚠️ Important: directly construct the agent; do NOT call `.from_tools`
+    agent_kwargs = dict(
+        tools=[query_engine_tool] if query_engine_as_tool else [],
+        react_chat_formatter=react_chat_formatter,
+        llm=llm,
+        max_iterations=max_iterations,
+        memory=memory,
+        output_parser=output_parser,
+        verbose=verbose,
+    )
+
+    try:
+        # Most builds accept constructor kwargs like below
+        return CustomReActAgent(**agent_kwargs)
+    except TypeError:
+        # Fallback shape if constructor signature differs
+        # (older legacy ReActAgent often takes these positionally)
+        return CustomReActAgent(
+            tools=agent_kwargs["tools"],
             react_chat_formatter=react_chat_formatter,
             llm=llm,
             max_iterations=max_iterations,
@@ -149,97 +181,135 @@ def get_chat_engine(index: CustomVectorStoreIndex,
             output_parser=output_parser,
             verbose=verbose,
         )
-    else:  # without having query engine as tool (but external to agent)
-        return CustomReActAgent.from_tools(
-            tools=[],
-            react_chat_formatter=react_chat_formatter,
-            llm=llm,
-            max_iterations=max_iterations,
-            memory=memory,
-            output_parser=output_parser,
-            verbose=verbose,
-        )
 
 
-def ask_questions(input_queries, retrieval_engine, query_engine, store_response_partial, engine, query_engine_as_tool, reset_chat, chat_history, direct_llm_call=False, run_application=False):
-    # TODO 2023-10-15: We need metadata filtering at database level else for the query to look over Documents metadata else it fails e.g. when asked to
-    #  retrieve content from authors. It would search in paper content but not necessarily correctly fetch all documents, and might return documents that cited the author but which can be irrelevant.
+# ----------------------- Chat / Query Execution -----------------------
+
+def ask_questions(
+    input_queries,
+    retrieval_engine,
+    query_engine,
+    store_response_partial,
+    engine,
+    query_engine_as_tool,
+    reset_chat,
+    chat_history,
+    direct_llm_call: bool = False,
+    run_application: bool = False,
+):
+    """
+    Runs queries through either the chat agent (has .chat) or a direct query engine (has .query),
+    logs/stores responses, and returns the last response + metadata when applicable.
+    """
     all_formatted_metadata = None
+
+    # Duck-typed capability checks
+    has_chat = hasattr(retrieval_engine, "chat") and callable(getattr(retrieval_engine, "chat"))
+    has_query = hasattr(retrieval_engine, "query") and callable(getattr(retrieval_engine, "query"))
+
     for query_str in input_queries:
-        # TODO 2023-10-08: add the metadata filters  # https://docs.pinecone.io/docs/metadata-filtering#querying-an-index-with-metadata-filters
-        if isinstance(retrieval_engine, BaseChatEngine):
+        if has_chat:
             if not query_engine_as_tool:
+                # Use query_engine directly first, then pass to chat agent
                 response = query_engine.query(query_str)
-                str_response, all_formatted_metadata = log_and_store(store_response_partial, query_str, response, chatbot=True)
+                str_response, all_formatted_metadata = log_and_store(
+                    store_response_partial, query_str, response, chatbot=True
+                )
                 str_response = QUERY_TOOL_RESPONSE.format(question=query_str, response=str_response)
                 logging.info(f"Message passed to chat engine:    \n\n[{str_response}]")
                 logging.info(f"With input chat history: [{chat_history}]")
-                response, all_formatted_metadata = retrieval_engine.chat(message=str_response, chat_history=chat_history)
+                response, all_formatted_metadata = retrieval_engine.chat(
+                    message=str_response, chat_history=chat_history
+                )
             else:
-                if os.environ.get('ENVIRONMENT') == 'LOCAL':
+                if os.environ.get("ENVIRONMENT") == "LOCAL":
                     logging.info(f"The question asked is: [{query_str}]")
                     logging.info(f"With input chat history: [{chat_history}]")
                 if not direct_llm_call:
-                    response, all_formatted_metadata = retrieval_engine.chat(message=query_str, chat_history=chat_history)
+                    response, all_formatted_metadata = retrieval_engine.chat(
+                        message=query_str, chat_history=chat_history
+                    )
                 else:
-                    response, all_formatted_metadata = retrieval_engine._llm.chat([ChatMessage(content=query_str, role="user")])
+                    # Best-effort direct LLM call; relies on your agent having _llm
+                    response, all_formatted_metadata = retrieval_engine._llm.chat(
+                        [ChatMessage(content=query_str, role="user")]
+                    )
+
             text_out = getattr(response, "response", response)
             text_out = strip_meta_phrases(text_out)
 
             if not run_application:
-                logging.info(f"[End output shown to client for question [{query_str}]]:    \n```\n{text_out}\n```")
-                if os.environ.get('ENVIRONMENT') == 'LOCAL':
+                logging.info(
+                    f"[End output shown to client for question [{query_str}]]:    \n```\n{text_out}\n```"
+                )
+                if os.environ.get("ENVIRONMENT") == "LOCAL":
                     print_text(
                         f"[End output shown to client for question [{query_str}]]:    \n```\n{text_out}\n\n Fetched based on the following sources: \n{all_formatted_metadata}\n```\n",
-                        color='green'
+                        color="green",
                     )
-            if reset_chat:
-                logging.info(f"Resetting chat engine after question.")
-                retrieval_engine.reset()  # NOTE 2023-10-27: comment out to reset the chat after each question and see the performance, i.e. correct response given memory versus hallucination.
+            if reset_chat and hasattr(retrieval_engine, "reset"):
+                logging.info("Resetting chat engine after question.")
+                retrieval_engine.reset()
 
-            # if len(input_queries) > 1:
-            #     response = ChatMessage(
-            #         role=MessageRole.ASSISTANT,
-            #         content=response.response,
-            #     )
-            #     chat_history.append(response)
-
-        elif isinstance(retrieval_engine, BaseQueryEngine):
+        elif has_query:
             logging.info(f"Querying index with query:    [{query_str}]")
             response = retrieval_engine.query(query_str)
-            response, all_formatted_metadata = log_and_store(store_response_partial, query_str, response, chatbot=False)
+            response, all_formatted_metadata = log_and_store(
+                store_response_partial, query_str, response, chatbot=False
+            )
+
         else:
-            logging.error(f"Please specify a retrieval engine amongst ['chat', 'query'], current input: {engine}")
-            assert False
+            # Neither chat nor query method is present — surface a clear error
+            raise TypeError(
+                f"Retrieval engine has neither .chat nor .query. Got type={type(retrieval_engine)}"
+            )
+
     if (len(input_queries) == 1) or (all_formatted_metadata is not None):
         return response, all_formatted_metadata
 
 
+# ----------------------- Engine Wiring -----------------------
+
 @timeit
-def get_engine_from_vector_store(embedding_model_name: str,
-                                 embedding_model: Union[OpenAIEmbedding, HuggingFaceEmbedding],
-                                 llm_model_name: str,
-                                 service_context: ServiceContext,
-                                 text_splitter_chunk_size: int,
-                                 text_splitter_chunk_overlap_percentage: int,
-                                 index: CustomVectorStoreIndex,
-                                 query_engine_as_tool: bool,
-                                 stream: bool,
-                                 similarity_top_k: int,
-                                 log_name: str,
-                                 engine='chat',
-                                 ):
+def get_engine_from_vector_store(
+    embedding_model_name: str,
+    embedding_model: Union[OpenAIEmbedding, HuggingFaceEmbedding],
+    llm_model_name: str,
+    text_splitter_chunk_size: int,
+    text_splitter_chunk_overlap_percentage: int,
+    index: CustomVectorStoreIndex,
+    query_engine_as_tool: bool,
+    stream: bool,
+    similarity_top_k: int,
+    log_name: str,
+    engine: str = "chat",
+):
+    """
+    Creates the retrieval/chat engines from a vector store-backed index.
+    No ServiceContext; relies on global Settings for LLM/embeddings.
+    """
+    # Partial for logging/storing responses
+    store_response_partial = partial(
+        store_response,
+        embedding_model_name,
+        llm_model_name,
+        text_splitter_chunk_size,
+        text_splitter_chunk_overlap_percentage,
+    )
 
-    # TODO 2023-09-29: determine how we should structure our indexes per document type
-    # create partial store_response with everything but the query_str and response
-    store_response_partial = partial(store_response, embedding_model_name, llm_model_name, text_splitter_chunk_size, text_splitter_chunk_overlap_percentage)
-
-    if engine == 'chat':
-        retrieval_engine = get_chat_engine(index=index, stream=stream, service_context=service_context, chat_mode="react", verbose=True, similarity_top_k=similarity_top_k, query_engine_as_tool=query_engine_as_tool, log_name=log_name)
-        query_engine = get_query_engine(index=index, service_context=service_context, verbose=True, similarity_top_k=similarity_top_k)
-    elif engine == 'query':
+    if engine == "chat":
+        retrieval_engine = get_chat_engine(
+            index=index,
+            stream=stream,
+            query_engine_as_tool=query_engine_as_tool,
+            log_name=log_name,
+            verbose=True,
+            similarity_top_k=similarity_top_k,
+        )
+        query_engine = get_query_engine(index=index, verbose=True, similarity_top_k=similarity_top_k)
+    elif engine == "query":
         query_engine = None
-        retrieval_engine = get_query_engine(index=index, service_context=service_context, verbose=True, similarity_top_k=similarity_top_k)
+        retrieval_engine = get_query_engine(index=index, verbose=True, similarity_top_k=similarity_top_k)
     else:
         assert False, f"Please specify a retrieval engine amongst ['chat', 'query'], current input: {engine}"
 

@@ -1,73 +1,150 @@
+# src/Llama_index_sandbox/utils/store_response.py
+
+from __future__ import annotations
+
+import json
 import os
-import json
 from datetime import datetime
-from typing import Dict, Any
-import llama_index.legacy.response.schema as Response
-from llama_index.legacy.schema import NodeWithScore
+from typing import Any, Dict, List
 
-import json
-from typing import List, Dict, Any
+# ✅ Core LlamaIndex types (no legacy)
+from llama_index.core.schema import NodeWithScore  # type: ignore
+try:
+    # Most current locations
+    from llama_index.core.base.response.schema import Response  # type: ignore
+except Exception:
+    # Fallback if package layout differs
+    from llama_index.core.response import Response  # type: ignore
 
-# Assuming NodeWithScore and Response are imported from the external library
 
+# --------- helpers: safe extraction & JSON-coercion ---------
+
+def _safe_node_id(node: Any) -> str | None:
+    # Core nodes typically expose .node_id, some builds keep .id_
+    return getattr(node, "node_id", getattr(node, "id_", None))
+
+def _safe_text(node: Any) -> str | None:
+    # Prefer .text when available, fallback to get_content() if present
+    txt = getattr(node, "text", None)
+    if txt is not None:
+        return txt
+    getter = getattr(node, "get_content", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            return None
+    return None
+
+def _safe_metadata(md: Any) -> Dict[str, Any]:
+    # Ensure a dict, then coerce values that aren't JSON serializable into strings
+    if not isinstance(md, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in md.items():
+        try:
+            json.dumps(v)
+            out[k] = v
+        except (TypeError, ValueError):
+            out[k] = str(v)
+    return out
+
+def _safe_score(nws: Any) -> float | None:
+    # Core NodeWithScore: .score; old shims: .get_score()
+    if hasattr(nws, "score"):
+        return getattr(nws, "score")
+    getter = getattr(nws, "get_score", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            return None
+    return None
+
+
+# --------- public serializers ---------
 
 def node_with_score_to_dict(node_with_score: NodeWithScore) -> Dict[str, Any]:
+    node = getattr(node_with_score, "node", None)
     return {
-        "node_id": node_with_score.node_id,
-        "score": node_with_score.get_score(),
-        "text": node_with_score.text,
-        "metadata": node_with_score.metadata
+        "node_id": _safe_node_id(node),
+        "score": _safe_score(node_with_score),
+        "text": _safe_text(node),
+        "metadata": _safe_metadata(getattr(node, "metadata", {})),
     }
 
 
 def response_to_dict(response: Response) -> Dict[str, Any]:
+    source_nodes: List[NodeWithScore] = getattr(response, "source_nodes", []) or []
+    metadata = _safe_metadata(getattr(response, "metadata", {}))
     return {
-        "response": response.response,
-        "source_nodes": [node_with_score_to_dict(node) for node in response.source_nodes],
-        "metadata": response.metadata
+        "response": getattr(response, "response", None),
+        "source_nodes": [node_with_score_to_dict(n) for n in source_nodes],
+        "metadata": metadata,
     }
 
 
-def store_response(embedding_model_name: str, llm_model_name: str, text_splitter_chunk_size: int, text_splitter_chunk_overlap_percentage: int, query_str: str, response: Response) -> None:
-    # Ensure the directory exists
-    dir_path = "datasets/evaluation_results"
+# --------- storage ---------
+
+def store_response(
+    embedding_model_name: str,
+    llm_model_name: str,
+    text_splitter_chunk_size: int,
+    text_splitter_chunk_overlap_percentage: int,
+    query_str: str,
+    response: Response,
+    *,
+    dir_path: str = "datasets/evaluation_results",
+    subjective_score: str | None = None,
+) -> None:
+    """
+    Append a record of (query, response, provenance) into a daily JSON file.
+
+    - Uses only core LlamaIndex types
+    - Safely serializes metadata and node contents
+    - Appends to a per-day file keyed by embedding/LLM/chunk params
+    """
     os.makedirs(dir_path, exist_ok=True)
 
-    # Format the filename
     date_str = datetime.now().strftime("%Y-%m-%d")
-    file_name = f"{date_str}_{embedding_model_name}_{llm_model_name}_{text_splitter_chunk_size}_{text_splitter_chunk_overlap_percentage}.json"
+    file_name = (
+        f"{date_str}_{embedding_model_name}_{llm_model_name}_"
+        f"{text_splitter_chunk_size}_{text_splitter_chunk_overlap_percentage}.json"
+    )
     file_path = os.path.join(dir_path, file_name)
 
-    # Convert the response to dict
-    data = {
-        "subjective_score": "Your subjective score here",
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "subjective_score": subjective_score or "N/A",
+        "params": {
+            "embedding_model_name": embedding_model_name,
+            "llm_model_name": llm_model_name,
+            "chunk_size": text_splitter_chunk_size,
+            "chunk_overlap_pct": text_splitter_chunk_overlap_percentage,
+        },
         "query_str": query_str,
         "response": response_to_dict(response),
     }
 
+    # Append to JSON list on disk
     if os.path.exists(file_path):
-        # Load existing data
-        with open(file_path, 'r') as f:
-            existing_data = json.load(f)
-
-        # Check if the existing data is a list
-        if isinstance(existing_data, list):
-            # If it's a list, append the new response
-            existing_data.append(data)
-        else:
-            # If it's a dict, create a new list containing the existing data and the new response
-            existing_data = [existing_data, data]
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, list):
+                existing.append(record)
+            else:
+                existing = [existing, record]
+        except Exception:
+            # If file is corrupted or unreadable, start fresh but keep a backup
+            backup = file_path + ".bak"
+            try:
+                os.replace(file_path, backup)
+            except Exception:
+                pass
+            existing = [record]
     else:
-        # If the file doesn't exist, initialize the list with the current response
-        existing_data = [data]
+        existing = [record]
 
-    # Write back the data to the file
-    with open(file_path, 'w') as f:
-        json.dump(existing_data, f, indent=4)
-
-# Usage Example:
-# embedding_model = "Your embedding model name here"
-# llm_model = "Your LLM model name here"
-# query_str = "Your query string here"
-# response_obj = <Get your Response object from the library>
-# store_response(embedding_model, llm_model, query_str, response_obj)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=4, ensure_ascii=False)

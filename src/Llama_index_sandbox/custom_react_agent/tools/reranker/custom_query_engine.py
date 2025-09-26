@@ -1,20 +1,27 @@
+# src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_query_engine.py
+from __future__ import annotations
+
 import heapq
 import logging
 import os
 import pickle
 from datetime import datetime
-from typing import List
+from typing import Dict, List, Tuple, Optional
 from urllib.parse import urlparse
 
 import pandas as pd
 import tldextract
-from llama_index.legacy import QueryBundle
-from llama_index.legacy.callbacks import EventPayload, CBEventType
-from llama_index.legacy.indices.base_retriever import BaseRetriever  # noqa: F401 (kept if referenced elsewhere)
-from llama_index.legacy.query_engine import RetrieverQueryEngine
-from llama_index.legacy.response.schema import Response, RESPONSE_TYPE
-from llama_index.legacy.schema import NodeWithScore
 
+# ---- LlamaIndex (core) ----
+from llama_index.core.base.base_query_engine import BaseQueryEngine
+from llama_index.core.base.response.schema import RESPONSE_TYPE, Response
+from llama_index.core.callbacks import CBEventType, EventPayload
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.schema import NodeWithScore, QueryBundle
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core.prompts.mixin import PromptDictType
+
+# ---- Project bits ----
 from src.Llama_index_sandbox import root_dir
 from src.Llama_index_sandbox.constants import DOCUMENT_TYPES
 from src.Llama_index_sandbox.utils.site_configs import site_configs
@@ -22,7 +29,6 @@ from src.Llama_index_sandbox.utils.utils import load_csv_data
 
 
 def _console_safe(s) -> str:
-    """Return an ASCII-safe representation (emojis/backslashes preserved as escapes)."""
     try:
         return str(s).encode("ascii", "backslashreplace").decode("ascii")
     except Exception:
@@ -30,64 +36,81 @@ def _console_safe(s) -> str:
 
 
 def _log_info_safe(msg: str) -> None:
-    """Info-log a message after making it ASCII-safe for terminals with latin-1 encodings."""
     logging.info(_console_safe(msg))
 
 
-class CustomQueryEngine(RetrieverQueryEngine):
-    # Paths & weight tables ---------------------------------------------
+class CustomQueryEngine(BaseQueryEngine):
+    """
+    Core-only query engine that:
+      1) Retrieves candidates via a core retriever
+      2) Applies CSV-based enrichments & score adjustments
+      3) Reranks and synthesizes a response (using a core synthesizer)
+    """
+
+    # ---------- weights & config paths ----------
     weights_file = f"{root_dir}/datasets/evaluation_data/effective_weights.pkl"
-    document_weights = {
-        f'{DOCUMENT_TYPES.ARTICLE.value}_weights': {},
-        f'{DOCUMENT_TYPES.YOUTUBE_VIDEO.value}_weights': {
-            'Tim Roughgarden Lectures': 0.95,
-            'default': float(os.environ.get('DEFAULT_YOUTUBE_VIDEO_WEIGHT', '0.90')),
+
+    document_weights: Dict[str, Dict[str, float]] = {
+        f"{DOCUMENT_TYPES.ARTICLE.value}_weights": {},
+        f"{DOCUMENT_TYPES.YOUTUBE_VIDEO.value}_weights": {
+            "Tim Roughgarden Lectures": 0.95,
+            "default": float(os.environ.get("DEFAULT_YOUTUBE_VIDEO_WEIGHT", "0.90")),
         },
-        f'{DOCUMENT_TYPES.RESEARCH_PAPER.value}_weights': {
-            'default': float(os.environ.get('DEFAULT_RESEARCH_PAPER_WEIGHT', '1.5')),
+        f"{DOCUMENT_TYPES.RESEARCH_PAPER.value}_weights": {
+            "default": float(os.environ.get("DEFAULT_RESEARCH_PAPER_WEIGHT", "1.5")),
         },
-        'unspecified_weights': {  # default case for absent metadata
-            'default': 0.8,
-        },
-    }
-    authors_list = {}
-    authors_weights = {
-        'Ethereum.org': 1.15,
-        'default': 1,
+        "unspecified_weights": {"default": 0.8},
     }
 
-    keywords_to_penalise = []
-    edge_case_of_content_always_cited = []
+    authors_list: Dict[str, List[str]] = {}
+    authors_weights: Dict[str, float] = {
+        "Ethereum.org": 1.15,
+        "default": 1.0,
+    }
+
+    keywords_to_penalise: List[str] = []
+    edge_case_of_content_always_cited: List[str] = []
     edge_case_set = set(edge_case_of_content_always_cited)
 
-    # Pre-compute mappings for document weights
-    document_weight_mappings = {
-        key: {source: weight for source, weight in weights.items() if source != 'default'}
+    document_weight_mappings: Dict[str, Dict[str, float]] = {
+        key: {source: weight for source, weight in weights.items() if source != "default"}
         for key, weights in document_weights.items()
     }
-    default_weights = {key: weights.get('default', 1) for key, weights in document_weights.items()}
+    default_weights: Dict[str, float] = {
+        key: weights.get("default", 1.0) for key, weights in document_weights.items()
+    }
 
-    # Pre-compute an author-to-weight mapping
-    author_weight_mapping = {}
+    author_weight_mapping: Dict[str, float] = {}
     for firm, authors in authors_list.items():
-        weight = authors_weights.get(firm, 1)
+        weight = authors_weights.get(firm, 1.0)
         for author in authors:
             author_weight_mapping[author] = weight
-    author_weight_mapping['default'] = authors_weights.get('default', 1)
+    author_weight_mapping["default"] = authors_weights.get("default", 1.0)
 
-    # --------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        *,
+        retriever: VectorIndexRetriever,
+        callback_manager=None,
+    ) -> None:
+        super().__init__(callback_manager=callback_manager)
+        self._retriever = retriever
 
-        self.effective_weights = self.load_or_compute_weights(
+        # Lightweight core engine to reuse synthesizer
+        self._core_engine = RetrieverQueryEngine.from_args(retriever=self._retriever)
+
+        # effective weights
+        self.effective_weights: Dict[Tuple, float] = self.load_or_compute_weights(
             document_weight_mappings=self.document_weight_mappings,
             weights_file=self.weights_file,
             authors_list=self.authors_list,
             authors_weights=self.authors_weights,
+            recompute_weights=False,
         )
 
-        # Safe loading of CSV files
+        # CSV loads
         merged_csv_path = f"{root_dir}/datasets/evaluation_data/merged_articles.csv"
         updated_csv_path = f"{root_dir}/datasets/evaluation_data/articles_updated.csv"
 
@@ -105,11 +128,29 @@ class CustomQueryEngine(RetrieverQueryEngine):
             self.updated_df = pd.DataFrame()
             logging.warning(f"articles_updated.csv not found at {updated_csv_path}, using empty DataFrame")
 
-        self.discourse_only_penalty = float(os.environ.get('DISCOURSE_ONLY_PENALTY', '0.50'))
-        self.forum_name_in_title_penalty = float(os.environ.get('FORUM_NAME_IN_TITLE_PENALTY', '1.5'))
-        self.doc_to_remove = float(os.environ.get('DOC_TO_REMOVE', '0.0'))
-        self.keyword_to_penalise_multiplier = float(os.environ.get('KEYWORD_TO_PENALISE_MULTIPLIER', '0.4'))
-        self.site_domains = {urlparse(config['base_url']).netloc for config in site_configs.values()}
+        # env-configurable multipliers
+        self.discourse_only_penalty = float(os.environ.get("DISCOURSE_ONLY_PENALTY", "0.50"))
+        self.forum_name_in_title_penalty = float(os.environ.get("FORUM_NAME_IN_TITLE_PENALTY", "1.5"))
+        self.doc_to_remove = float(os.environ.get("DOC_TO_REMOVE", "0.0"))
+        self.keyword_to_penalise_multiplier = float(os.environ.get("KEYWORD_TO_PENALISE_MULTIPLIER", "0.4"))
+
+        self.site_domains = {urlparse(cfg["base_url"]).netloc for cfg in site_configs.values()}
+
+    # ---------------- PromptMixin hooks (to satisfy abstract requirements) ----------------
+
+    def _get_prompts(self) -> Dict[str, any]:  # type: ignore[override]
+        # No custom prompts; keep empty to satisfy PromptMixin
+        return {}
+
+    def _get_prompt_modules(self) -> Dict[str, any]:  # type: ignore[override]
+        # No prompt modules used here
+        return {}
+
+    def _update_prompts(self, prompts: PromptDictType) -> None:  # type: ignore[override]
+        # Nothing to update; present for completeness
+        return
+
+    # ===================== weights loader =====================
 
     @classmethod
     def load_or_compute_weights(
@@ -119,285 +160,270 @@ class CustomQueryEngine(RetrieverQueryEngine):
         authors_list,
         authors_weights,
         recompute_weights: bool = False,
-    ):
-        os.makedirs(os.path.dirname(cls.weights_file), exist_ok=True)
+    ) -> Dict[Tuple, float]:
+        os.makedirs(os.path.dirname(weights_file), exist_ok=True)
 
-        def precompute_effective_weights(document_weight_mappings, authors_weights, authors_list):
-            effective_weights = {}
+        def precompute_effective_weights(
+            document_weight_mappings,
+            authors_weights,
+            authors_list,
+        ) -> Dict[Tuple, float]:
+            effective: Dict[Tuple, float] = {}
 
-            # Generate all possible combinations for articles with triplets
+            # (A) Articles: triplets (type, source_domain, author_url)
+            art_key = f"{DOCUMENT_TYPES.ARTICLE.value}_weights"
             for group, authors in authors_list.items():
-                group_weight = authors_weights.get(group, 1)
+                group_w = authors_weights.get(group, 1.0)
                 for author_url in authors:
-                    author_extracted = tldextract.extract(author_url)
-                    author_domain = author_extracted.domain + '.' + author_extracted.suffix
-
-                    for source, weight in document_weight_mappings.get(DOCUMENT_TYPES.ARTICLE.value + '_weights', {}).items():
-                        source_extracted = tldextract.extract(source)
-                        source_domain = source_extracted.domain + '.' + source_extracted.suffix
-
+                    a_ext = tldextract.extract(author_url)
+                    author_domain = f"{a_ext.domain}.{a_ext.suffix}"
+                    for source, w in document_weight_mappings.get(art_key, {}).items():
+                        s_ext = tldextract.extract(source)
+                        source_domain = f"{s_ext.domain}.{s_ext.suffix}"
                         if author_domain == source_domain:
-                            key = (DOCUMENT_TYPES.ARTICLE.value, source, author_url)
-                            effective_weights[key] = weight * group_weight
+                            effective[(DOCUMENT_TYPES.ARTICLE.value, source, author_url)] = w * group_w
 
-            # Generate pairs for research papers and videos
-            for document_type, doc_weights in document_weight_mappings.items():
-                if document_type != DOCUMENT_TYPES.ARTICLE.value + '_weights':
-                    for source, weight in doc_weights.items():
-                        key = (document_type, source)
-                        effective_weights[key] = doc_weights.get(source, doc_weights.get('default', 1))
+            # (B) Research papers & videos: pairs (type_key, source)
+            for dtype_key, doc_map in document_weight_mappings.items():
+                if dtype_key != art_key:
+                    for source, w in doc_map.items():
+                        effective[(dtype_key, source)] = w
 
-            return effective_weights
+            return effective
 
         try:
             if not recompute_weights and os.path.exists(weights_file):
-                with open(weights_file, 'rb') as f:
+                with open(weights_file, "rb") as f:
                     return pickle.load(f)
-            else:
-                effective_weights = precompute_effective_weights(
-                    document_weight_mappings=document_weight_mappings,
-                    authors_list=authors_list,
-                    authors_weights=authors_weights,
-                )
-                with open(weights_file, 'wb') as f:
-                    pickle.dump(effective_weights, f)
-                return effective_weights
+            effective_weight = precompute_effective_weights(
+                document_weight_mappings=document_weight_mappings,
+                authors_weights=authors_weights,
+                authors_list=authors_list,
+            )
+            with open(weights_file, "wb") as f:
+                pickle.dump(effective_weight, f)
+            return effective_weight
         except Exception as e:
             _log_info_safe(f"Error while loading or computing weights: {e}")
             return {}
 
-    # ------------------------- Score adjustments -------------------------
+    # ===================== enrichments & penalties =====================
 
-    def penalise_if_discourse_only_or_forum_name_in_title(self, nodes_with_score: List[NodeWithScore]):
+    def _penalise_discourse_or_forum_title(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
         merged_links = set()
-        updated_titles = set()
         updated_links = set()
 
-        if not self.merged_df.empty and 'Link' in self.merged_df.columns:
-            merged_links = set(self.merged_df['Link'].dropna().unique())
+        if not self.merged_df.empty and "Link" in self.merged_df.columns:
+            merged_links = set(self.merged_df["Link"].dropna().unique())
+        if not self.updated_df.empty and "article" in self.updated_df.columns:
+            updated_links = set(self.updated_df["article"].dropna().unique())
 
-        if not self.updated_df.empty:
-            if 'title' in self.updated_df.columns:
-                updated_titles = set(self.updated_df['title'].dropna().unique())
-            if 'article' in self.updated_df.columns:
-                updated_links = set(self.updated_df['article'].dropna().unique())
-
-        for node_with_score in nodes_with_score:
-            if node_with_score.node.metadata.get('document_type', '') == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
+        for nws in nodes:
+            if nws.node.metadata.get("document_type", "") == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
                 continue
-            link = node_with_score.node.metadata.get('pdf_link', '').strip()
-            title = node_with_score.node.metadata.get('title', '').strip()
+
+            link = (nws.node.metadata.get("pdf_link") or "").strip()
+            title = (nws.node.metadata.get("title") or "").strip().lower()
 
             if link in merged_links and link not in updated_links:
-                node_with_score.score *= self.discourse_only_penalty
+                nws.score = (nws.score or 0.0) * self.discourse_only_penalty
 
-            if "ethereum research" in title.lower() or "flashbots collective" in title.lower():
-                node_with_score.score *= self.forum_name_in_title_penalty
+            if "ethereum research" in title or "flashbots collective" in title:
+                nws.score = (nws.score or 0.0) * self.forum_name_in_title_penalty
 
-        return nodes_with_score
+        return nodes
 
-    def populate_missing_pdf_links(self, nodes_with_score: List[NodeWithScore]):
-        titles_links_mapping = {}
+    def _populate_missing_pdf_links(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
+        title_to_link: Dict[str, str] = {}
 
-        if not self.merged_df.empty and 'Title' in self.merged_df.columns and 'Link' in self.merged_df.columns:
-            merged_mapping = (
-                self.merged_df[['Title', 'Link']].dropna().set_index('Title')['Link'].to_dict()
+        if not self.merged_df.empty and {"Title", "Link"} <= set(self.merged_df.columns):
+            title_to_link.update(
+                self.merged_df[["Title", "Link"]].dropna().set_index("Title")["Link"].to_dict()
             )
-            titles_links_mapping.update(merged_mapping)
-
-        if not self.updated_df.empty and 'article' in self.updated_df.columns and 'title' in self.updated_df.columns:
-            updated_mapping = (
-                self.updated_df.rename(columns={'article': 'Link', 'title': 'Title'})[['Title', 'Link']]
+        if not self.updated_df.empty and {"article", "title"} <= set(self.updated_df.columns):
+            upd = (
+                self.updated_df.rename(columns={"article": "Link", "title": "Title"})[["Title", "Link"]]
                 .dropna()
-                .set_index('Title')['Link']
+                .set_index("Title")["Link"]
                 .to_dict()
             )
-            titles_links_mapping.update(updated_mapping)
+            title_to_link.update(upd)
 
-        for node_with_score in nodes_with_score:
-            if node_with_score.node.metadata.get('document_type', '') == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
+        for nws in nodes:
+            if nws.node.metadata.get("document_type", "") == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
                 continue
-            if not node_with_score.node.metadata.get('pdf_link'):
-                title = node_with_score.node.metadata.get('title', '').strip()
-                matched_link = titles_links_mapping.get(title)
-                if matched_link:
-                    node_with_score.node.metadata['pdf_link'] = matched_link
+            if not nws.node.metadata.get("pdf_link"):
+                title = (nws.node.metadata.get("title") or "").strip()
+                matched = title_to_link.get(title)
+                if matched:
+                    nws.node.metadata["pdf_link"] = matched
 
-        return nodes_with_score
+        return nodes
 
-    def adjust_scores_based_on_criteria(self, nodes_with_score: List[NodeWithScore]):
-        BOOST_SCORE_MULTIPLIER = float(os.environ.get('BOOST_SCORE_MULTIPLIER', '1.3'))
-        DOCS_BOOST_SCORE_MULTIPLIER = float(os.environ.get('DOCS_BOOST_SCORE_MULTIPLIER', '1.20'))
-        PENALTY_SCORE_MULTIPLIER = float(os.environ.get('PENALTY_SCORE_MULTIPLIER', '0.85'))
-        CHANNEL_NAMES_TO_BOOST = [os.environ.get('CHANNEL_NAMES_TO_BOOST', 'ETHDenver')]
-        CHANNEL_NAMES_TO_PENALISE = [os.environ.get('CHANNEL_NAMES_TO_PENALISE', 'Chainlink')]
-        DATE_THRESHOLD = datetime.strptime('2024-02-01', '%Y-%m-%d')
+    def _adjust_scores_by_criteria(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
+        BOOST = float(os.environ.get("BOOST_SCORE_MULTIPLIER", "1.3"))
+        DOCS_BOOST = float(os.environ.get("DOCS_BOOST_SCORE_MULTIPLIER", "1.20"))
+        PENALTY = float(os.environ.get("PENALTY_SCORE_MULTIPLIER", "0.85"))
+        CHANNEL_BOOST = [os.environ.get("CHANNEL_NAMES_TO_BOOST", "ETHDenver")]
+        CHANNEL_PENAL = [os.environ.get("CHANNEL_NAMES_TO_PENALISE", "Chainlink")]
+        DATE_THRESHOLD = datetime.strptime("2024-02-01", "%Y-%m-%d")
 
-        for node_with_score in nodes_with_score:
-            channel_name = node_with_score.node.metadata.get('channel_name', '').strip()
-            if channel_name in CHANNEL_NAMES_TO_PENALISE:
-                node_with_score.score *= PENALTY_SCORE_MULTIPLIER
-            if channel_name in CHANNEL_NAMES_TO_BOOST:
-                release_date_str = node_with_score.node.metadata.get('release_date', '').strip()
+        for nws in nodes:
+            ch = (nws.node.metadata.get("channel_name") or "").strip()
+            if ch in CHANNEL_PENAL:
+                nws.score = (nws.score or 0.0) * PENALTY
+            if ch in CHANNEL_BOOST:
+                rd_str = (nws.node.metadata.get("release_date") or "").strip()
+                rd = None
                 try:
-                    release_date = datetime.strptime(release_date_str, '%Y-%m-%d') if release_date_str else None
+                    rd = datetime.strptime(rd_str, "%Y-%m-%d") if rd_str else None
                 except ValueError:
-                    release_date = None
+                    rd = None
+                if rd and rd > DATE_THRESHOLD:
+                    nws.score = (nws.score or 0.0) * BOOST
 
-                if release_date and release_date > DATE_THRESHOLD:
-                    node_with_score.score *= BOOST_SCORE_MULTIPLIER
-
-            pdf_link = node_with_score.node.metadata.get('pdf_link', '').strip()
+            pdf_link = (nws.node.metadata.get("pdf_link") or "").strip()
             if not pdf_link:
                 continue
-            pdf_link_domain = urlparse(pdf_link).netloc
-            if (
-                pdf_link_domain in self.site_domains
-                or 'docs' in pdf_link.lower()
-                or 'documentation' in pdf_link.lower()
-            ):
-                node_with_score.score *= DOCS_BOOST_SCORE_MULTIPLIER
+            domain = urlparse(pdf_link).netloc
+            if domain in self.site_domains or "docs" in pdf_link.lower() or "documentation" in pdf_link.lower():
+                nws.score = (nws.score or 0.0) * DOCS_BOOST
                 _log_info_safe(
-                    f"Boosting score for document: [{node_with_score.node.metadata.get('title', 'UNSPECIFIED')}] "
-                    f"from [{pdf_link}]"
+                    f"Boosting doc: [{nws.node.metadata.get('title', 'UNSPECIFIED')}] from [{pdf_link}]"
                 )
 
-        return nodes_with_score
+        return nodes
 
-    def apply_special_adjustments(self, node_with_score):
-        document_name = node_with_score.node.metadata.get('title', 'UNSPECIFIED')
+    def _apply_special_adjustments(self, nws: NodeWithScore) -> None:
+        name = nws.node.metadata.get("title", "UNSPECIFIED")
+        if name in self.edge_case_set:
+            _log_info_safe(f"Applying [{self.doc_to_remove}] score to document: [{name}]")
+            nws.score = (nws.score or 0.0) * self.doc_to_remove
 
-        if document_name in self.edge_case_set:
-            _log_info_safe(f"Applying [{self.doc_to_remove}] score to document: [{document_name}]")
-            node_with_score.score *= self.doc_to_remove
+        for kw in self.keywords_to_penalise:
+            if kw.lower() in name.lower():
+                _log_info_safe(f"Penalising keyword: [{kw}] in document: [{name}]")
+                nws.score = (nws.score or 0.0) * self.keyword_to_penalise_multiplier
 
-        for word in self.keywords_to_penalise:
-            if word.lower() in document_name.lower():
-                _log_info_safe(f"Penalising keyword: [{word}] in document: [{document_name}]")
-                node_with_score.score *= self.keyword_to_penalise_multiplier
+    # ===================== reranker =====================
 
-    # --------------------------- Reranker --------------------------------
+    def _rerank(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
+        NUM_CHUNKS = int(os.environ.get("NUM_CHUNKS_RETRIEVED", "10"))
+        SCORE_TH = float(os.environ.get("SCORE_THRESHOLD", "0.10"))
+        MIN_CHUNKS = int(os.environ.get("MIN_CHUNKS_FOR_RESPONSE", "2"))
 
-    def nodes_reranker(self, nodes_with_score: List[NodeWithScore]) -> List[NodeWithScore]:
-        NUM_CHUNKS_RETRIEVED = int(os.environ.get('NUM_CHUNKS_RETRIEVED', '10'))
-        SCORE_THRESHOLD = float(os.environ.get('SCORE_THRESHOLD', '0.10'))
-        MIN_CHUNKS_FOR_RESPONSE = int(os.environ.get('MIN_CHUNKS_FOR_RESPONSE', '2'))
+        for nws in nodes:
+            self._apply_special_adjustments(nws)
 
-        for node_with_score in nodes_with_score:
-            self.apply_special_adjustments(node_with_score)
+        logging.info(f"count nodes before threshold [{len(nodes)}]")
+        nodes = [n for n in nodes if (n.score or 0.0) >= SCORE_TH]
+        logging.info(f"count nodes AFTER threshold [{len(nodes)}]")
 
-        logging.info(f"count nodes before score threshold filtering [{len(nodes_with_score)}]")
-        nodes_with_score = [node for node in nodes_with_score if node.score >= SCORE_THRESHOLD]
-        logging.info(f"count nodes AFTER score threshold filtering [{len(nodes_with_score)}]")
+        if not nodes:
+            return nodes
 
-        if not nodes_with_score:
-            return nodes_with_score
+        nodes = self._penalise_discourse_or_forum_title(nodes)
+        nodes = self._populate_missing_pdf_links(nodes)
+        nodes = self._adjust_scores_by_criteria(nodes)
 
-        nodes_with_score = self.penalise_if_discourse_only_or_forum_name_in_title(nodes_with_score)
-        nodes_with_score = self.populate_missing_pdf_links(nodes_with_score)
-        nodes_with_score = self.adjust_scores_based_on_criteria(nodes_with_score)
+        if len(nodes) < MIN_CHUNKS:
+            logging.warning(f"Number of nodes below minimum chunks: {len(nodes)}")
+            return []
 
-        if len(nodes_with_score) < MIN_CHUNKS_FOR_RESPONSE:
-            logging.warning(f"Number of nodes below threshold: {len(nodes_with_score)}")
-            nodes_with_score = []
+        # document-type/source weighting
+        for nws in nodes:
+            score = (nws.score or 0.0)
+            doc_type = (nws.node.metadata.get("document_type") or "UNSPECIFIED").lower()
 
-        for node_with_score in nodes_with_score:
-            score = node_with_score.score
-            document_type = node_with_score.node.metadata.get('document_type', 'UNSPECIFIED').lower()
-
-            if document_type == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
-                source = node_with_score.node.metadata.get('channel_name', 'UNSPECIFIED LINK').strip()
-                weight_key = (document_type + '_weights', source)
-                effective_weight = self.effective_weights.get(
-                    weight_key,
-                    self.document_weights[document_type + '_weights'].get('default', 1),
+            if doc_type == DOCUMENT_TYPES.YOUTUBE_VIDEO.value:
+                source = (nws.node.metadata.get("channel_name") or "UNSPECIFIED LINK").strip()
+                key = (doc_type + "_weights", source)
+                eff = self.effective_weights.get(
+                    key,
+                    self.document_weights[doc_type + "_weights"].get("default", 1.0),
                 )
             else:
-                link = node_with_score.node.metadata.get('pdf_link', 'UNSPECIFIED LINK').strip()
+                link = (nws.node.metadata.get("pdf_link") or "UNSPECIFIED LINK").strip()
                 extracted = tldextract.extract(link)
-                domain = f"{extracted.subdomain}.{extracted.domain}.{extracted.suffix}".strip('.')
-                author_url = node_with_score.node.metadata.get('authors', 'UNSPECIFIED LINK').strip()
-                weight_key = (document_type, domain, author_url)
-                effective_weight = self.effective_weights.get(
-                    weight_key,
-                    self.document_weights[document_type + '_weights'].get(
-                        domain, self.document_weights[document_type + '_weights'].get('default', 1)
+                domain = ".".join([s for s in [extracted.subdomain, extracted.domain, extracted.suffix] if s])
+                author_url = (nws.node.metadata.get("authors") or "UNSPECIFIED LINK").strip()
+                key_triplet = (doc_type, domain, author_url)
+                eff = self.effective_weights.get(
+                    key_triplet,
+                    self.document_weights[doc_type + "_weights"].get(
+                        domain, self.document_weights[doc_type + "_weights"].get("default", 1.0)
                     ),
                 )
+            nws.score = score * eff
 
-            node_with_score.score = score * effective_weight
+        if os.environ.get("ENVIRONMENT") == "LOCAL":
+            self._log_unique(nodes[:NUM_CHUNKS], f"Top {NUM_CHUNKS} nodes before rerank")
 
-        if os.environ.get('ENVIRONMENT') == 'LOCAL':
-            self.log_unique_filenames(nodes_with_score[:NUM_CHUNKS_RETRIEVED], f"Top {NUM_CHUNKS_RETRIEVED} nodes before rerank")
+        top = heapq.nlargest(NUM_CHUNKS, nodes, key=lambda x: (x.score or 0.0))
+        top = [n for n in top if (n.score or 0.0) >= SCORE_TH]
 
-        top_nodes = heapq.nlargest(NUM_CHUNKS_RETRIEVED, nodes_with_score, key=lambda x: x.score)
-        top_nodes = [node for node in top_nodes if node.score >= SCORE_THRESHOLD]
+        if os.environ.get("ENVIRONMENT") == "LOCAL":
+            self._log_unique(top, f"Re-ranked top {NUM_CHUNKS} nodes")
 
-        if os.environ.get('ENVIRONMENT') == 'LOCAL':
-            self.log_unique_filenames(top_nodes, f"Re-ranked top {NUM_CHUNKS_RETRIEVED} nodes")
+        return top
 
-        return top_nodes
+    # ===================== logging =====================
 
-    # --------------------------- Logging ---------------------------------
-
-    def log_unique_filenames(self, nodes: List[NodeWithScore], context: str):
-        unique_files_info = {}
-        document_type_count = {}
+    def _log_unique(self, nodes: List[NodeWithScore], context: str) -> None:
+        unique: Dict[Tuple[str, str], Dict] = {}
+        by_title_scores: Dict[str, List[float]] = {}
 
         _log_info_safe(f"Logging unique file names and document types in context: {context}")
 
-        title_scores = {}
-        for node in nodes:
-            title = node.node.metadata.get('title', 'UNSPECIFIED FILE')
-            title_scores.setdefault(title, []).append(node.score)
+        for n in nodes:
+            title = n.node.metadata.get("title", "UNSPECIFIED FILE")
+            by_title_scores.setdefault(title, []).append(n.score or 0.0)
 
-        for node in nodes:
-            filename = node.node.metadata.get('title', 'UNSPECIFIED FILE')
-            document_type = node.node.metadata.get('document_type', 'UNSPECIFIED')
+        doc_type_count: Dict[str, int] = {}
+        for n in nodes:
+            title = n.node.metadata.get("title", "UNSPECIFIED FILE")
+            dtype = n.node.metadata.get("document_type", "UNSPECIFIED")
+            file_key = (dtype, title)
 
-            file_key = (document_type, filename)
-            if file_key not in unique_files_info:
-                unique_files_info[file_key] = {
-                    'chunk_count': len(title_scores.get(filename, [])),
-                    'index': len(unique_files_info) + 1,
-                    'scores': title_scores.get(filename, []),
+            if file_key not in unique:
+                unique[file_key] = {
+                    "chunk_count": len(by_title_scores.get(title, [])),
+                    "index": len(unique) + 1,
+                    "scores": by_title_scores.get(title, []),
                 }
+            doc_type_count[dtype] = doc_type_count.get(dtype, 0) + 1
 
-            document_type_count[document_type] = document_type_count.get(document_type, 0) + 1
-
-        for (document_type, filename), info in unique_files_info.items():
-            scores_str = ", ".join(f"{score:.2f}" for score in info['scores'])
+        for (dtype, title), info in unique.items():
+            scores_str = ", ".join(f"{s:.2f}" for s in info["scores"])
             _log_info_safe(
-                f"Unique file #{info['index']}: Document Type: [{document_type}], "
-                f"Filename: [{filename}], Chunks Retrieved: [{info['chunk_count']}], "
-                f"Scores: [{scores_str}]"
+                f"Unique file #{info['index']}: Document Type: [{dtype}], "
+                f"Filename: [{title}], Chunks Retrieved: [{info['chunk_count']}], Scores: [{scores_str}]"
             )
 
-        document_type_counts_str = ", ".join(f"{doc_type}: {count}" for doc_type, count in document_type_count.items())
-        _log_info_safe(f"Document Type chunk-distribution: {document_type_counts_str}")
+        dist = ", ".join(f"{k}: {v}" for k, v in doc_type_count.items())
+        _log_info_safe(f"Document Type chunk-distribution: {dist}")
 
-    # --------------------------- Query path ------------------------------
+    # ===================== BaseQueryEngine interface =====================
 
     def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
-        """Answer a query."""
         with self.callback_manager.event(
             CBEventType.QUERY, payload={EventPayload.QUERY_STR: query_bundle.query_str}
-        ) as query_event:
+        ) as qevent:
             with self.callback_manager.event(
                 CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: query_bundle.query_str}
-            ) as retrieve_event:
-                nodes = self.retrieve(query_bundle)
+            ) as revent:
+
+                nodes: List[NodeWithScore] = self._retriever.retrieve(query_bundle)
 
                 logging.info(f"Initial retrieval returned {len(nodes)} nodes")
-                if len(nodes) > 0:
-                    logging.info(
-                        f"Initial scores range: {min(n.score for n in nodes):.4f} - {max(n.score for n in nodes):.4f}"
-                    )
+                if nodes:
+                    scores = [n.score or 0.0 for n in nodes]
+                    logging.info(f"Initial scores range: {min(scores):.4f} - {max(scores):.4f}")
 
-                nodes = self.nodes_reranker(nodes_with_score=nodes)
+                nodes = self._rerank(nodes)
                 logging.info(f"After reranking: {len(nodes)} nodes remain")
 
-                retrieve_event.on_end(payload={EventPayload.NODES: nodes})
+                revent.on_end(payload={EventPayload.NODES: nodes})
 
             if not nodes:
                 response_str = (
@@ -405,10 +431,48 @@ class CustomQueryEngine(RetrieverQueryEngine):
                     "However, we encourage you to ask questions about Internet Capital Markets (ICM) and Solana. "
                     "Feel free to ask another question!"
                 )
-                response = Response(response_str, source_nodes=[], metadata={})
+                response: Response = Response(response_str, source_nodes=[], metadata={})
             else:
-                response = self._response_synthesizer.synthesize(query=query_bundle, nodes=nodes)
+                response = self._core_engine._response_synthesizer.synthesize(  # type: ignore
+                    query=query_bundle, nodes=nodes
+                )
 
-            query_event.on_end(payload={EventPayload.RESPONSE: response})
+            qevent.on_end(payload={EventPayload.RESPONSE: response})
+
+        return response
+
+    async def _aquery(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
+        with self.callback_manager.event(
+            CBEventType.QUERY, payload={EventPayload.QUERY_STR: query_bundle.query_str}
+        ) as qevent:
+            with self.callback_manager.event(
+                CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: query_bundle.query_str}
+            ) as revent:
+
+                nodes: List[NodeWithScore] = await self._retriever.aretrieve(query_bundle)
+
+                logging.info(f"[async] Initial retrieval returned {len(nodes)} nodes")
+                if nodes:
+                    scores = [n.score or 0.0 for n in nodes]
+                    logging.info(f"[async] Initial scores range: {min(scores):.4f} - {max(scores):.4f}")
+
+                nodes = self._rerank(nodes)
+                logging.info(f"[async] After reranking: {len(nodes)} nodes remain")
+
+                revent.on_end(payload={EventPayload.NODES: nodes})
+
+            if not nodes:
+                response_str = (
+                    "We could not find any results related to your query. "
+                    "However, we encourage you to ask questions about Internet Capital Markets (ICM) and Solana. "
+                    "Feel free to ask another question!"
+                )
+                response: Response = Response(response_str, source_nodes=[], metadata={})
+            else:
+                response = await self._core_engine._response_synthesizer.asynthesize(  # type: ignore
+                    query=query_bundle, nodes=nodes
+                )
+
+            qevent.on_end(payload={EventPayload.RESPONSE: response})
 
         return response

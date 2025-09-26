@@ -10,8 +10,12 @@ from functools import partial
 from typing import List, Union
 
 from langchain_community.embeddings import OpenAIEmbeddings
-from llama_index.legacy.embeddings import OpenAIEmbedding, HuggingFaceEmbedding
-from llama_index.legacy.schema import TextNode
+
+# --- LlamaIndex core imports (migrated from legacy) ---
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.core.schema import TextNode, MetadataMode
+
 from tiktoken.model import MODEL_TO_ENCODING
 
 from src.Llama_index_sandbox.utils.utils import timeit
@@ -32,11 +36,20 @@ def num_tokens_from_string(string: str, embedding_model_name: str) -> int:
     return num_tokens
 
 
-def generate_node_embedding(node: TextNode, embedding_model: Union[OpenAIEmbedding, HuggingFaceEmbedding, OpenAIEmbeddings], progress_counter, total_nodes, progress_percentage=0.05):
+def generate_node_embedding(
+    node: TextNode,
+    embedding_model: Union[OpenAIEmbedding, HuggingFaceEmbedding, OpenAIEmbeddings],
+    progress_counter,
+    total_nodes,
+    progress_percentage=0.05,
+):
     """Generate embedding for a single node."""
     try:
-        node_content = node.get_content(metadata_mode="all")
-        model_name = embedding_model.model_name if hasattr(embedding_model, 'model_name') else embedding_model.model
+        # NOTE: core expects a MetadataMode enum; behavior is unchanged.
+        node_content = node.get_content(metadata_mode=MetadataMode.ALL)
+
+        # Preserve original model-name logic
+        model_name = getattr(embedding_model, "model_name", None) or getattr(embedding_model, "model", None)
         if model_name in MODEL_TO_ENCODING.keys():  # deactivate token counter if it is OSS model
             num_tokens = num_tokens_from_string(node_content, model_name)
 
@@ -47,16 +60,23 @@ def generate_node_embedding(node: TextNode, embedding_model: Union[OpenAIEmbeddi
                 time.sleep(duration)
                 # logging.warning(f"Rate limit about to be exceeded, sleeping for {int(duration)} seconds...")
 
-        if isinstance(embedding_model, OpenAIEmbedding) or isinstance(embedding_model, HuggingFaceEmbedding):
+        # Keep the exact branching and behavior
+        if isinstance(embedding_model, (OpenAIEmbedding, HuggingFaceEmbedding)):
             node_embedding = embedding_model.get_text_embedding(node_content)
-        if isinstance(embedding_model, OpenAIEmbeddings):
+        elif isinstance(embedding_model, OpenAIEmbeddings):
             node_embedding = embedding_model.embed_query(node_content)
+        else:
+            raise TypeError(f"Unsupported embedding model type: {type(embedding_model)}")
+
         node.embedding = node_embedding
 
         with progress_counter.get_lock():
             progress_counter.value += 1
             progress = (progress_counter.value / total_nodes) * 100
-            if progress_counter.value % math.ceil(total_nodes * progress_percentage) == 0 or progress_counter.value == total_nodes:
+            if (
+                progress_counter.value % math.ceil(total_nodes * progress_percentage) == 0
+                or progress_counter.value == total_nodes
+            ):
                 logging.info(f"Progress: {progress:.2f}% - {progress_counter.value}/{total_nodes} nodes processed.")
 
     except Exception as e:
@@ -67,15 +87,17 @@ def generate_node_embedding(node: TextNode, embedding_model: Union[OpenAIEmbeddi
 def generate_embeddings(nodes: List[TextNode], embedding_model):
     import concurrent.futures
 
-    progress_counter = multiprocessing.Value('i', 0)
+    progress_counter = multiprocessing.Value("i", 0)
     total_nodes = len(nodes)
 
-    partial_generate_node_embedding = partial(generate_node_embedding,
-                                              embedding_model=embedding_model,
-                                              progress_counter=progress_counter,
-                                              total_nodes=total_nodes)
+    partial_generate_node_embedding = partial(
+        generate_node_embedding,
+        embedding_model=embedding_model,
+        progress_counter=progress_counter,
+        total_nodes=total_nodes,
+    )
 
-    num_threads = int(3/4 * multiprocessing.cpu_count())
+    num_threads = int(3 / 4 * multiprocessing.cpu_count())
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         list(executor.map(partial_generate_node_embedding, nodes))
@@ -131,12 +153,13 @@ def enrich_nodes_with_metadata_via_llm(nodes):
       This function may make multiple API calls depending on the number of nodes and questions specified,
       and the nature of the language model used.
       """
-    from llama_index.node_parser.extractors import (
+    # --- core extractor + LLM imports (ported) ---
+    from llama_index.core.extractors import (
         MetadataExtractor,
         QuestionsAnsweredExtractor,
         TitleExtractor,
     )
-    from llama_index.llms import OpenAI
+    from llama_index.llms.openai import OpenAI
 
     llm = OpenAI(model="gpt-3.5-turbo")
 
