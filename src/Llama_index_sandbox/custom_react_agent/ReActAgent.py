@@ -268,43 +268,43 @@ class CustomReActAgent(ReActAgent):
         """
         Minimal ReAct parser:
         - Extract optional 'Thought:'.
-        - If it finds `Final Answer:` or `Answer:`, returns ResponseReasoningStep(thought=..., response=...) and is_done=True.
-        - Else if it finds `Action:` and `Action Input:`, returns ActionReasoningStep(thought=..., action=..., action_input=...).
+        - If it finds `Final Answer:` or `Answer:`, returns ResponseReasoningStep(...), is_done=True.
+        - Else if it finds `Action:` and `Action Input:`, returns ActionReasoningStep(...), is_done=False.
+        - Else: if there's any assistant content, treat it as a direct final answer.
         """
-        # Pull content from ChatResponse (supports core/legacy)
+        # Pull content from ChatResponse (supports core/legacy adapters)
         content = ""
         try:
             content = output.message.content
         except Exception:
             try:
-                # core-style OpenAI adapter often exposes .raw.choices[0].message.content
-                content = output.raw.choices[0].message.content  # type: ignore[attr-defined]
+                content = output.raw.choices[0].message.content  # OpenAI adapter
             except Exception:
                 try:
-                    content = output.raw["choices"][0]["message"]["content"]  # dictionary-style
+                    content = output.raw["choices"][0]["message"]["content"]
                 except Exception:
-                    pass
+                    content = ""
 
         steps: List[BaseReasoningStep] = []
         is_done = False
 
         import re, json
 
-        # Parse an optional Thought line (take the last occurrence above Action/Answer)
+        # Optional Thought (take the last match)
         thought = None
         for m in re.finditer(r"Thought\s*:\s*(.*)", content, re.IGNORECASE):
             thought = m.group(1).strip()
         if not thought:
             thought = "Reason about the question and decide whether to call a tool."
 
-        # 1) Final answer?
+        # Final answer?
         m_final = re.search(r"(?:Final Answer|Answer)\s*:\s*(.*)", content, re.DOTALL | re.IGNORECASE)
         if m_final:
             answer = m_final.group(1).strip()
             steps.append(ResponseReasoningStep(thought=thought, response=answer))
             return None, steps, True
 
-        # 2) Action + Action Input?
+        # Tool call?
         m_action = re.search(r"Action\s*:\s*([A-Za-z0-9_\-\.]+)", content)
         m_input = re.search(r"Action Input\s*:\s*(\{.*\})", content, re.DOTALL)
         if m_action and m_input:
@@ -313,12 +313,16 @@ class CustomReActAgent(ReActAgent):
             try:
                 action_input = json.loads(raw_ai)
             except Exception:
-                # Not valid JSON? Wrap raw as text so tool can still get something
                 action_input = {"input": raw_ai}
             steps.append(ActionReasoningStep(thought=thought, action=action_name, action_input=action_input))
             return None, steps, False
 
-        # 3) Nothing recognized – no step this turn
+        # No explicit ReAct markers: if we got any content, treat as direct final answer
+        if content.strip():
+            steps.append(ResponseReasoningStep(thought=thought, response=content.strip()))
+            return None, steps, True
+
+        # Truly nothing recognized
         return None, steps, False
 
     def _get_response(self, steps: List[BaseReasoningStep]) -> AgentChatResponse:
@@ -353,19 +357,29 @@ class CustomReActAgent(ReActAgent):
 
     @timeit
     def _process_actions(
-        self, output: ChatResponse, last_metadata: Optional[str] = None
+            self, output: ChatResponse, last_metadata: Optional[str] = None
     ) -> Tuple[List[BaseReasoningStep], bool, str]:
         _, current_reasoning, is_done = self._extract_reasoning_step(output)
+
+        # If the parser returned no steps at all, treat it as "answered directly" to avoid indexing [-1].
+        if not current_reasoning:
+            return [], True, last_metadata
+
         if is_done:
             return current_reasoning, True, last_metadata
 
+        # ⬇️ FIX: do not use an undefined `_` here; just fetch tools
+        self._tools_dict = {tool.metadata.name: tool for tool in self._get_tools()}
         reasoning_step = cast(ActionReasoningStep, current_reasoning[-1])
-        self._tools_dict = {tool.metadata.name: tool for tool in self._get_tools(_)}
+
         tool = self._tools_dict[reasoning_step.action]
 
         with self.callback_manager.event(
-            CBEventType.FUNCTION_CALL,
-            payload={EventPayload.FUNCTION_CALL: reasoning_step.action_input, EventPayload.TOOL: tool.metadata},
+                CBEventType.FUNCTION_CALL,
+                payload={
+                    EventPayload.FUNCTION_CALL: reasoning_step.action_input,
+                    EventPayload.TOOL: tool.metadata,
+                },
         ) as event:
             tool_output = tool.call(**reasoning_step.action_input)
 
