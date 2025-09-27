@@ -6,10 +6,9 @@ from pathlib import Path
 
 from llama_index.core import Settings
 from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding  # <-- ensure 3072D
 
 # --- Make imports work whether run as "python src/rag_v2/app_main.py" or "python -m src.rag_v2.app_main" ---
-
-# Try relative (module execution). If that fails, add "<repo>/src" to sys.path and import absolutely.
 try:
     from .retriever.parent_child_retriever import ParentChildRetrieverV2  # type: ignore
     from .query_engine_v2 import ParentChildQueryEngineV2  # type: ignore
@@ -28,15 +27,28 @@ except Exception:
     from Llama_index_sandbox.index import load_index_from_disk  # type: ignore
 
 
+def _configure_models() -> None:
+    """
+    Configure both the LLM and the *embedding* model.
+    IMPORTANT: Embedder must match your Pinecone index dimension (3072).
+    """
+    # LLM
+    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", "gpt-4o-mini"))
+
+    # Embeddings (set to 3072D)
+    embed_model_name = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+    # NOTE: text-embedding-3-large returns 3072-dim vectors by default.
+    Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
+
+
 def bootstrap_query_engine_v2(similarity_top_k: int = 50):
     """
     Bootstraps the Parent/Child query engine with your Pinecone-backed index.
     Works regardless of how this file is executed.
     """
-    # Configure LLM (inherits your global Settings elsewhere too)
-    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", "gpt-4o-mini"))
+    _configure_models()
 
-    # Load index
+    # Load index (will inherit Settings.embed_model for query embeddings)
     index = load_index_from_disk()
 
     # Build base retriever, then wrap with ParentChildRetrieverV2
@@ -52,9 +64,24 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50):
 
 
 if __name__ == "__main__":
-    # Simple smoke test when running directly in your IDE
+    """
+    Run from IDE directly. You can pass multiple questions as CLI args, e.g.:
+
+        python src/rag_v2/app_main.py "what is a DAT on Solana?" \
+            "return all videos about DATs and Kyle Samani"
+
+    If no args are provided, a small default list is used.
+    """
     qe = bootstrap_query_engine_v2()
     from llama_index.core.schema import QueryBundle
 
-    resp = qe.query(QueryBundle("what is a DAT on Solana?"))
-    print(resp)
+    questions = sys.argv[1:] or [
+        "what is a DAT on Solana?",
+        "return all videos about DATs and Kyle Samani",
+        "show me all clips where Kyle Samani details how DATs will be deployed in DeFi",
+    ]
+
+    for i, q in enumerate(questions, 1):
+        print(f"\n=== Q{i}: {q}\n")
+        resp = qe.query(QueryBundle(q))
+        print(resp)
