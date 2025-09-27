@@ -2,47 +2,34 @@
 
 # Define an array of file paths
 FILES=(
-"src/rag_v2/app_main.py"
-"src/rag_v2/agent_main.py"
-"src/rag_v2/tools.py"
-"src/rag_v2/logging_utils.py"
+"src/Llama_index_sandbox/main.py"
+"src/Llama_index_sandbox/retrieve.py"
+"src/Llama_index_sandbox/prompts.py"
+"src/Llama_index_sandbox/index.py"
+"src/Llama_index_sandbox/constants.py"
+"src/Llama_index_sandbox/embed.py"
 
-"src/rag_v2/config.py"
-"src/rag_v2/query_engine_v2.py"
-"src/rag_v2/schemas.py"
-"src/rag_v2/vector_store/pinecone_client.py"
-"src/rag_v2/utils/scoring.py"
-"src/rag_v2/router/video_router.py"
-"src/rag_v2/retriever/parent_child_retriever.py"
-"src/rag_v2/rerankers/cross_encoder.py"
-"src/rag_v2/tests/smoke_test.py"
+"src/Llama_index_sandbox/custom_react_agent/ReActAgent.py"
+"src/Llama_index_sandbox/custom_react_agent/formatter.py"
+"src/Llama_index_sandbox/custom_react_agent/logging_handler.py"
+"src/Llama_index_sandbox/custom_react_agent/output_parser.py"
+
+"src/Llama_index_sandbox/custom_react_agent/tools/query_engine.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/query_engine_prompts.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/tool_output.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/fn_schema.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/default_prompt_selectors.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_vector_store_index.py"
+"src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_query_engine.py"
+
+"src/Llama_index_sandbox/custom_react_agent/callbacks/schema.py"
+"src/Llama_index_sandbox/evaluation/eval.py"
+"src/Llama_index_sandbox/utils/token_counter.py"
+"src/Llama_index_sandbox/utils/utils.py"
 
 )
 
-  # "src/Llama_index_sandbox/main.py"
-  # "src/Llama_index_sandbox/retrieve.py"
-  # "src/Llama_index_sandbox/prompts.py"
-  # "src/Llama_index_sandbox/index.py"
-  # "src/Llama_index_sandbox/constants.py"
-  # "src/Llama_index_sandbox/embed.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/ReActAgent.py"
-  # "src/Llama_index_sandbox/custom_react_agent/formatter.py"
-  # "src/Llama_index_sandbox/custom_react_agent/logging_handler.py"
-  # "src/Llama_index_sandbox/custom_react_agent/output_parser.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/tools/query_engine.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/query_engine_prompts.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/tool_output.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/fn_schema.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/default_prompt_selectors.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_vector_store_index.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_query_engine.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/callbacks/schema.py"
-  # "src/Llama_index_sandbox/evaluation/eval.py"
-  # "src/Llama_index_sandbox/utils/token_counter.py"
-  # "src/Llama_index_sandbox/utils/utils.py"
+
 
 remove_comments="${1:-true}"  # Default to true if no parameter is provided
 

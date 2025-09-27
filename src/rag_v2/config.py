@@ -1,9 +1,17 @@
 from __future__ import annotations
 import os
 from dataclasses import dataclass
+from typing import Optional  # <-- add
 
 @dataclass
 class RetrievalConfig:
+    # --------- DEBUG / LOGGING ---------
+    # Hardcode default here; env var can override.
+    rag_debug: bool = os.getenv("RAG_DEBUG", "false").lower() in ("1", "true", "yes", "on")
+    # If set (path or filename), logs also go to a file in JSON (one trace per line).
+    debug_log_path: Optional[str] = os.getenv("RAG_DEBUG_FILE") or None
+
+    # --------- FEATURES ---------
     enable_router: bool = os.getenv("ENABLE_ROUTER", "1") in ("1","true","yes")
     enable_bm25: bool = os.getenv("ENABLE_BM25", "0") in ("1","true","yes")
     enable_ce: bool = os.getenv("ENABLE_RERANK_CE", "1") in ("1","true","yes")

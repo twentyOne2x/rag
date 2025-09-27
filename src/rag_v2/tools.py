@@ -11,12 +11,14 @@ from llama_index.llms.openai import OpenAI
 # --- resilient imports (run as module or script) ---
 try:
     from .app_main import bootstrap_query_engine_v2  # type: ignore
+    from .logging_utils import clean_model_refs  # type: ignore
 except ImportError:
     _here = Path(__file__).resolve()
     _src = _here.parents[1]  # .../src
     if str(_src) not in sys.path:
         sys.path.insert(0, str(_src))
     from rag_v2.app_main import bootstrap_query_engine_v2  # type: ignore
+    from rag_v2.logging_utils import clean_model_refs  # type: ignore
 
 _QE = None
 
@@ -32,16 +34,7 @@ def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
     """
     Agent tool: query the video/stream index and synthesize an answer
     with links to relevant clips/segments.
-
-    Args:
-      query: User's natural language question. Examples:
-             - "return all videos about DATs and Kyle Samani"
-             - "show me all clips where Kyle Samani details how DATs will be deployed in DeFi"
-      top_k: optional cap on number of nodes synthesized (if your CE/topK is already set, you can ignore).
-    Returns:
-      A plain-text answer with references (your QE will include source nodes).
     """
     qe = _get_qe()
     resp = qe.query(query)
-    # resp is a llama_index Response; stringify for the agent
-    return str(resp)
+    return clean_model_refs(str(resp))
