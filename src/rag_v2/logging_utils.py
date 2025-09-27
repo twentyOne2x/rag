@@ -132,3 +132,96 @@ def model_snapshot():
         }
     except Exception:
         return {}
+
+
+# --- v1-style "Fetched based on..." formatting --------------------------------
+from collections import defaultdict
+from typing import List, Tuple
+
+def _get_meta_and_score(nws) -> Tuple[dict, float]:
+    """Works for LI legacy/core NodeWithScore shapes."""
+    score = getattr(nws, "score", None)
+    if hasattr(nws, "node") and getattr(nws, "node") is not None:
+        meta = getattr(nws.node, "metadata", {}) or {}
+    else:
+        meta = getattr(nws, "metadata", {}) or {}
+    return meta, float(score) if score is not None else None
+
+def format_sources_v1_style(source_nodes: List) -> str:
+    """
+    Group by title and render lines exactly like your v1 examples:
+    [Title]: ..., [Channel name]: ... / [Authors]: ..., [url]/[Link]: ..., [Release date]: ..., [Highest Score]: ...
+    """
+    by_title = defaultdict(lambda: {
+        "pdf_link": "N/A",
+        "url": "N/A",
+        "release_date": "N/A",
+        "channel_name": "N/A",
+        "authors": None,
+        "highest_score": None,
+        "is_video": False,
+        "chunks": 0,
+    })
+
+    for nws in source_nodes or []:
+        meta, score = _get_meta_and_score(nws)
+        title = meta.get("title") or "N/A"
+        item = by_title[title]
+        # detect video vs doc
+        is_video = "channel_name" in meta or meta.get("document_type") in ("youtube_video", "stream")
+        item["is_video"] = item["is_video"] or is_video
+
+        # common fields
+        item["url"] = meta.get("url") or meta.get("clip_url") or item["url"]
+        item["pdf_link"] = meta.get("pdf_link") or item["pdf_link"]
+        # keep either 'published_at' or 'published_date'
+        item["release_date"] = meta.get("published_at") or meta.get("published_date") or item["release_date"]
+        item["channel_name"] = meta.get("channel_name") or item["channel_name"]
+
+        # authors for docs (optional)
+        if not is_video and meta.get("authors"):
+            # accept list or comma-separated string
+            authors = meta["authors"]
+            if isinstance(authors, (list, tuple)):
+                item["authors"] = ", ".join(map(str, authors))
+            else:
+                item["authors"] = str(authors)
+
+        # score / chunks
+        item["chunks"] += 1
+        try:
+            if score is not None and (item["highest_score"] is None or score > item["highest_score"]):
+                item["highest_score"] = score
+        except Exception:
+            pass
+
+    # Sort primarily by highest_score (desc), secondarily by chunks (desc)
+    def _sort_key(tup):
+        meta = tup[1]
+        hs = meta["highest_score"]
+        return (hs if hs is not None else -1, meta["chunks"])
+
+    lines = []
+    for title, meta in sorted(by_title.items(), key=_sort_key, reverse=True):
+        if meta["is_video"]:
+            lines.append(
+                f"[Title]: {title}, [Channel name]: {meta['channel_name']}, "
+                f"[url]: {meta['url']}, [Release date]: {meta['release_date']}, "
+                f"[Highest Score]: {meta['highest_score']}"
+            )
+        else:
+            # Non-video (papers/posts) variant
+            lines.append(
+                f"[Title]: {title}, [Authors]: {meta['authors']}, "
+                f"[Link]: {meta['pdf_link'] or meta['url']}, [Release date]: {meta['release_date']}, "
+                f"[Highest Score]: {meta['highest_score']}"
+            )
+    return "\n".join(lines)
+
+def append_sources_block(text: str, source_nodes: List) -> str:
+    """Append the v1-looking sources section to the answer text."""
+    suffix = format_sources_v1_style(source_nodes)
+    if not suffix:
+        return text
+    # match your spacing exactly:
+    return f"{text}\n\n Fetched based on the following sources: \n{suffix}"

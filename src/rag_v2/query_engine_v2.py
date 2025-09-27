@@ -19,6 +19,7 @@ from .logging_utils import (
     time_block,
     cfg_snapshot,
     model_snapshot,
+    append_sources_block,
 )
 
 log = setup_logger("rag_v2.qe")
@@ -89,11 +90,21 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         raw = self._core._response_synthesizer.synthesize(query=query_bundle, nodes=nodes)
         try:
             cleaned_text = clean_model_refs(str(raw))
+            # prefer whatever the synthesizer returned for source_nodes; else fall back to our `nodes`
+            src_nodes = getattr(raw, "source_nodes", None) or nodes
+            final_text = append_sources_block(cleaned_text, src_nodes)
+
             if hasattr(raw, "response"):
-                raw.response = cleaned_text
+                # mutate in-place to preserve Response extras/metadata and sources
+                raw.response = final_text
+                # make sure source_nodes are present
+                if not getattr(raw, "source_nodes", None):
+                    raw.source_nodes = nodes
                 return raw
-            return Response(cleaned_text, source_nodes=getattr(raw, "source_nodes", nodes))
+
+            return Response(final_text, source_nodes=src_nodes)
         except Exception:
+            # last-resort: return raw as-is
             return raw
 
     # -------- sync path --------

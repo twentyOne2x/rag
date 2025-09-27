@@ -122,7 +122,7 @@ def run():
     )
 
     ask_questions(
-        input_queries=INPUT_QUERIES[:5],
+        input_queries=INPUT_QUERIES[:2],
         retrieval_engine=retrieval_engine,
         query_engine=query_engine,
         store_response_partial=store_response_partial,
