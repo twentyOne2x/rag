@@ -1,3 +1,4 @@
+# File: src/rag_v2/logging_utils.py
 from __future__ import annotations
 import json
 import logging
@@ -11,12 +12,14 @@ try:
 except Exception:
     CFG = None  # type: ignore
 
+
 def is_debug_enabled() -> bool:
     """
     Hard-disabled: we never emit deep JSON traces.
     Keeping the function for compatibility, but it always returns False.
     """
     return False
+
 
 def setup_logger(name: str = "rag_v2") -> logging.Logger:
     """
@@ -55,14 +58,17 @@ def setup_logger(name: str = "rag_v2") -> logging.Logger:
 
     return logger
 
+
 def pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False, default=_json_default)
+
 
 def _json_default(o: Any):
     try:
         return dict(o)
     except Exception:
         return str(o)
+
 
 def node_brief(nws) -> Dict[str, Any]:
     md = (getattr(nws, "node", None) and getattr(nws.node, "metadata", None)) or {}
@@ -86,6 +92,7 @@ def node_brief(nws) -> Dict[str, Any]:
         "text_preview": (text[:280] + "…") if text and len(text) > 280 else text,
     }
 
+
 _CLEAN_PATTERNS: Iterable[re.Pattern] = [
     re.compile(r"\b(based on (the )?(provided )?(context|documents|sources))\b[:,]?\s*", re.I),
     re.compile(r"\b(according to (the )?(context|documents|sources))\b[:,]?\s*", re.I),
@@ -93,6 +100,7 @@ _CLEAN_PATTERNS: Iterable[re.Pattern] = [
     re.compile(r"\b(from the retrieved (snippets|nodes|docs?|content))\b[:,]?\s*", re.I),
     re.compile(r"\b(the model|assistant) (found|retrieved|saw)\b[:,]?\s*", re.I),
 ]
+
 
 def clean_model_refs(text: str) -> str:
     if not text:
@@ -104,15 +112,20 @@ def clean_model_refs(text: str) -> str:
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
 
+
 # --- tiny timing + snapshots ---
 import time
 from dataclasses import asdict, is_dataclass
 
+
 def time_block():
     start = time.perf_counter()
+
     def end():
         return round((time.perf_counter() - start) * 1000, 2)  # ms
+
     return end
+
 
 def cfg_snapshot(cfg) -> dict:
     # turn the CFG dataclass into a plain dict safely
@@ -120,6 +133,7 @@ def cfg_snapshot(cfg) -> dict:
         return asdict(cfg) if is_dataclass(cfg) else {k: getattr(cfg, k) for k in dir(cfg) if not k.startswith("_")}
     except Exception:
         return {}
+
 
 def model_snapshot():
     try:
@@ -138,6 +152,7 @@ def model_snapshot():
 from collections import defaultdict
 from typing import List, Tuple
 
+
 def _get_meta_and_score(nws) -> Tuple[dict, float]:
     """Works for LI legacy/core NodeWithScore shapes."""
     score = getattr(nws, "score", None)
@@ -147,81 +162,97 @@ def _get_meta_and_score(nws) -> Tuple[dict, float]:
         meta = getattr(nws, "metadata", {}) or {}
     return meta, float(score) if score is not None else None
 
+
+def _format_timestamp_range(start_hms: str, end_hms: str) -> str:
+    """Format timestamp range for display, e.g., '00:12:34–00:15:22'"""
+    if start_hms and end_hms:
+        return f"{start_hms}–{end_hms}"
+    elif start_hms:
+        return start_hms
+    return ""
+
+
 def format_sources_v1_style(source_nodes: List) -> str:
     """
-    Group by title and render lines exactly like your v1 examples:
-    [Title]: ..., [Channel name]: ... / [Authors]: ..., [url]/[Link]: ..., [Release date]: ..., [Highest Score]: ...
+    Group by (title, clip_url) to show individual segments with their timestamps.
+    Format: [Title], [Timestamp], [Speaker], [Chapter], [Channel], [clip_url], [Date], [Score]
     """
-    by_title = defaultdict(lambda: {
-        "pdf_link": "N/A",
-        "url": "N/A",
-        "release_date": "N/A",
-        "channel_name": "N/A",
-        "authors": None,
-        "highest_score": None,
-        "is_video": False,
-        "chunks": 0,
-    })
+    # Group by (title, clip_url) so each unique segment gets its own line
+    segments = []
 
     for nws in source_nodes or []:
         meta, score = _get_meta_and_score(nws)
+
         title = meta.get("title") or "N/A"
-        item = by_title[title]
-        # detect video vs doc
+        clip_url = meta.get("clip_url") or meta.get("url") or "N/A"
+        start_hms = meta.get("start_hms") or ""
+        end_hms = meta.get("end_hms") or ""
+        speaker = meta.get("speaker") or ""
+        chapter = meta.get("chapter") or ""
+        channel_name = meta.get("channel_name") or "N/A"
+        release_date = meta.get("published_at") or meta.get("published_date") or "N/A"
+
         is_video = "channel_name" in meta or meta.get("document_type") in ("youtube_video", "stream")
-        item["is_video"] = item["is_video"] or is_video
 
-        # common fields
-        item["url"] = meta.get("url") or meta.get("clip_url") or item["url"]
-        item["pdf_link"] = meta.get("pdf_link") or item["pdf_link"]
-        # keep either 'published_at' or 'published_date'
-        item["release_date"] = meta.get("published_at") or meta.get("published_date") or item["release_date"]
-        item["channel_name"] = meta.get("channel_name") or item["channel_name"]
+        timestamp_str = _format_timestamp_range(start_hms, end_hms)
 
-        # authors for docs (optional)
-        if not is_video and meta.get("authors"):
-            # accept list or comma-separated string
-            authors = meta["authors"]
-            if isinstance(authors, (list, tuple)):
-                item["authors"] = ", ".join(map(str, authors))
-            else:
-                item["authors"] = str(authors)
+        segments.append({
+            "title": title,
+            "timestamp": timestamp_str,
+            "speaker": speaker,
+            "chapter": chapter,
+            "channel_name": channel_name,
+            "clip_url": clip_url,
+            "release_date": release_date,
+            "score": score if score is not None else 0.0,
+            "is_video": is_video,
+            "authors": meta.get("authors") if not is_video else None,
+            "pdf_link": meta.get("pdf_link") if not is_video else None,
+        })
 
-        # score / chunks
-        item["chunks"] += 1
-        try:
-            if score is not None and (item["highest_score"] is None or score > item["highest_score"]):
-                item["highest_score"] = score
-        except Exception:
-            pass
-
-    # Sort primarily by highest_score (desc), secondarily by chunks (desc)
-    def _sort_key(tup):
-        meta = tup[1]
-        hs = meta["highest_score"]
-        return (hs if hs is not None else -1, meta["chunks"])
+    # Sort by score descending
+    segments.sort(key=lambda x: x["score"], reverse=True)
 
     lines = []
-    for title, meta in sorted(by_title.items(), key=_sort_key, reverse=True):
-        if meta["is_video"]:
-            lines.append(
-                f"[Title]: {title}, [Channel name]: {meta['channel_name']}, "
-                f"[url]: {meta['url']}, [Release date]: {meta['release_date']}, "
-                f"[Highest Score]: {meta['highest_score']}"
-            )
+    for seg in segments:
+        if seg["is_video"]:
+            # Video format with timestamp
+            parts = [f"[Title]: {seg['title']}"]
+
+            if seg["timestamp"]:
+                parts.append(f"[Timestamp]: {seg['timestamp']}")
+
+            if seg["speaker"]:
+                parts.append(f"[Speaker]: {seg['speaker']}")
+
+            if seg["chapter"]:
+                parts.append(f"[Chapter]: {seg['chapter']}")
+
+            parts.extend([
+                f"[Channel]: {seg['channel_name']}",
+                f"[Clip URL]: {seg['clip_url']}",
+                f"[Date]: {seg['release_date']}",
+                f"[Score]: {seg['score']:.4f}"
+            ])
+
+            lines.append(", ".join(parts))
         else:
-            # Non-video (papers/posts) variant
-            lines.append(
-                f"[Title]: {title}, [Authors]: {meta['authors']}, "
-                f"[Link]: {meta['pdf_link'] or meta['url']}, [Release date]: {meta['release_date']}, "
-                f"[Highest Score]: {meta['highest_score']}"
-            )
+            # Non-video (papers/posts) format
+            parts = [
+                f"[Title]: {seg['title']}",
+                f"[Authors]: {seg['authors'] or 'N/A'}",
+                f"[Link]: {seg['pdf_link'] or seg['clip_url']}",
+                f"[Date]: {seg['release_date']}",
+                f"[Score]: {seg['score']:.4f}"
+            ]
+            lines.append(", ".join(parts))
+
     return "\n".join(lines)
 
+
 def append_sources_block(text: str, source_nodes: List) -> str:
-    """Append the v1-looking sources section to the answer text."""
+    """Append the timestamp-aware sources section to the answer text."""
     suffix = format_sources_v1_style(source_nodes)
     if not suffix:
         return text
-    # match your spacing exactly:
     return f"{text}\n\n Fetched based on the following sources: \n{suffix}"

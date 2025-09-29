@@ -34,3 +34,19 @@ class RetrievalConfig:
     streams_bias_mult: float = float(os.getenv("STREAMS_BIAS_MULT", "1.15"))
 
 CFG = RetrievalConfig()
+
+# --- Entity canonicalization (add this) ---
+ENT_CANON_MAP = {
+    # Solana
+    "solana": "Solana",
+    "sol": "SOL",
+    "soul": "SOL",    # <- the troublemaker
+    "$sol": "SOL",
+    "$soul": "SOL",
+
+    # add more as needed
+    "anza labs": "Anza",
+    "firedancer": "Firedancer",
+}
+# Normalize keys to lowercase for lookups
+ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

@@ -1,53 +1,12 @@
 #!/bin/bash
 
-# Define an array of file paths
-FILES=(
-"src/rag_v2/app_main.py"
-"src/rag_v2/agent_main.py"
-"src/rag_v2/tools.py"
-"src/rag_v2/logging_utils.py"
-
-"src/rag_v2/config.py"
-"src/rag_v2/query_engine_v2.py"
-"src/rag_v2/schemas.py"
-"src/rag_v2/vector_store/pinecone_client.py"
-"src/rag_v2/utils/scoring.py"
-"src/rag_v2/router/video_router.py"
-"src/rag_v2/retriever/parent_child_retriever.py"
-"src/rag_v2/rerankers/cross_encoder.py"
-"src/rag_v2/tests/smoke_test.py"
-
-)
-
-  # "src/Llama_index_sandbox/main.py"
-  # "src/Llama_index_sandbox/retrieve.py"
-  # "src/Llama_index_sandbox/prompts.py"
-  # "src/Llama_index_sandbox/index.py"
-  # "src/Llama_index_sandbox/constants.py"
-  # "src/Llama_index_sandbox/embed.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/ReActAgent.py"
-  # "src/Llama_index_sandbox/custom_react_agent/formatter.py"
-  # "src/Llama_index_sandbox/custom_react_agent/logging_handler.py"
-  # "src/Llama_index_sandbox/custom_react_agent/output_parser.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/tools/query_engine.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/query_engine_prompts.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/tool_output.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/fn_schema.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/default_prompt_selectors.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_vector_store_index.py"
-  # "src/Llama_index_sandbox/custom_react_agent/tools/reranker/custom_query_engine.py"
-  #
-  # "src/Llama_index_sandbox/custom_react_agent/callbacks/schema.py"
-  # "src/Llama_index_sandbox/evaluation/eval.py"
-  # "src/Llama_index_sandbox/utils/token_counter.py"
-  # "src/Llama_index_sandbox/utils/utils.py"
-
 remove_comments="${1:-true}"  # Default to true if no parameter is provided
 
 # Directory where logs are stored
 log_dir="logs"
+
+# Directory to search for files
+src_dir="src/rag_v2"
 
 # Find the most recent log file
 log_file=$(ls -t "$log_dir"/*.txt 2>/dev/null | head -n 1)
@@ -71,17 +30,24 @@ tree_dir="."  # Update this to your path of interest
 
 {
 echo "\`\`\`"  # Start triple backticks
-for file in "${FILES[@]}"; do
-    echo "File: $file"
-    echo "---------------------------------"
-    cat "$file"
-    echo ""
-    echo "================================="
-    echo ""
-done
+
+# Find all Python files in src/ingest_v2 and process them
+if [ -d "$src_dir" ]; then
+    # Find all .py files, excluding __pycache__ directories
+    find "$src_dir" -type f -name "*.py" ! -path "*/__pycache__/*" | sort | while IFS= read -r file; do
+        echo "File: $file"
+        echo "---------------------------------"
+        cat "$file"
+        echo ""
+        echo "================================="
+        echo ""
+    done
+else
+    echo "Warning: Directory $src_dir not found"
+fi
 
 # Print directory structure of the specified path excluding certain paths
-tree "$tree_dir" -I "node_modules|public|components|lib|assets|venv|utils|logs|fonts|cache" -L 4
+tree "$tree_dir" -I "node_modules|public|components|lib|assets|venv|utils|logs|fonts|cache|__pycache__" -L 4
 
 # Conditionally add the pre-error context and error section if logs were processed
 if [ "$logs_processed" = true ]; then

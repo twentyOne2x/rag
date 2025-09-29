@@ -11,6 +11,8 @@ from llama_index.core.query_engine import RetrieverQueryEngine
 
 from .config import CFG
 from .rerankers.cross_encoder import CEReranker
+from .postprocessors.entity_canonicalizer import EntityCanonicalizer  # NEW
+from .postprocessors.entity_utils import normalize_text_entities  # NEW
 from .logging_utils import (
     setup_logger,
     pretty,
@@ -30,7 +32,8 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
     Query engine that:
       1) Uses a parent/child retriever,
       2) Optionally reranks with a cross-encoder,
-      3) Synthesizes with LlamaIndex's core response synthesizer.
+      3) Applies entity canonicalization to fix text errors,  # NEW
+      4) Synthesizes with LlamaIndex's core response synthesizer.
 
     Emits a single JSON 'trace' per query at DEBUG (file sink if configured) and
     concise INFO logs for humans.
@@ -45,6 +48,8 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if CFG.enable_ce
             else None
         )
+        # NEW: Entity canonicalizer to fix "Soul" -> "SOL" etc.
+        self._entity_canonicalizer = EntityCanonicalizer()
 
     # Required for some LI versions
     def _get_prompt_modules(self):
@@ -60,7 +65,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         return items
 
     def _reinject_scores(
-        self, nodes: List[NodeWithScore], rescored: List[Tuple[str, str, float]]
+            self, nodes: List[NodeWithScore], rescored: List[Tuple[str, str, float]]
     ) -> List[NodeWithScore]:
         score_by_sid = {sid: sc for sid, _, sc in rescored}
         for n in nodes:
@@ -90,6 +95,9 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         raw = self._core._response_synthesizer.synthesize(query=query_bundle, nodes=nodes)
         try:
             cleaned_text = clean_model_refs(str(raw))
+            # NEW: Apply final entity normalization to the answer
+            cleaned_text = normalize_text_entities(cleaned_text)
+
             # prefer whatever the synthesizer returned for source_nodes; else fall back to our `nodes`
             src_nodes = getattr(raw, "source_nodes", None) or nodes
             final_text = append_sources_block(cleaned_text, src_nodes)
@@ -121,7 +129,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         # 1) Retrieve (+ retriever snapshot)
         t_retrieve = time_block()
         with self.callback_manager.event(
-            CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: q}
+                CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: q}
         ) as revent:
             nodes: List[NodeWithScore] = self._retriever.retrieve(query_bundle)
 
@@ -142,6 +150,10 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
             # 3) Keep top-K post-rerank
             nodes = nodes[: CFG.topk_post_rerank]
+
+            # NEW: Apply entity canonicalization to retrieved nodes
+            nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+
             revent.on_end(payload={EventPayload.NODES: nodes})
         trace["retrieve_ms"] = t_retrieve()
 
@@ -156,7 +168,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             log.info("qe[done] query='%s' -> no results (%.2f ms)", q, trace["total_ms"])
             return Response("No results found.", source_nodes=[])
 
-        # 4) Synthesize + clean
+        # 4) Synthesize + clean (includes final entity normalization)
         t_synth = time_block()
         resp = self._synthesize_clean(query_bundle, nodes)
         trace["synthesize_ms"] = t_synth()
@@ -195,6 +207,10 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             trace["ce_skipped"] = True
 
         nodes = nodes[: CFG.topk_post_rerank]
+
+        # NEW: Apply entity canonicalization to retrieved nodes
+        nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+
         trace["final_kept"] = self._final_sources_view(nodes)
 
         if not nodes:
@@ -212,6 +228,9 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
         try:
             cleaned = clean_model_refs(str(raw))
+            # NEW: Apply final entity normalization
+            cleaned = normalize_text_entities(cleaned)
+
             if hasattr(raw, "response"):
                 raw.response = cleaned
                 resp = raw

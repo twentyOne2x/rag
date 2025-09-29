@@ -89,6 +89,13 @@ if __name__ == "__main__":
         "what is a DAT on Solana?",
         "show me all clips where Kyle Samani details how DATs will be deployed in DeFi",
         "who's cupsey?",
+        "what's aster?",
+        "what's alpenglow?",
+        "what's firedancer?",
+        "return all videos about firedancer",
+        "return all videos from Anza",
+        "how much money has been raised on solana DATs and where will it be deployed in defi?",
+        "what is the first and most recent mention of firedancer?"
     ]
 
     for i, q in enumerate(questions, 1):
