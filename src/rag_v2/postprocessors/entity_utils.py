@@ -10,6 +10,12 @@ ENT_CANON_MAP = {
     "$soul": "SOL",
     "anza labs": "Anza",
     "firedancer": "Firedancer",
+    "anza": "Anza",
+    "anza labs": "Anza",
+    "firedancer": "Firedancer",
+    "frankendancer": "Firedancer",
+    "alpenglow": "Alpenglow",
+    "aster": "Aster",
 }
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
 

@@ -31,13 +31,13 @@ def _configure_models() -> None:
 
 # Simple heuristic router: send to video search when query looks retrieval-ish
 _VIDEO_HINTS = re.compile(
-    r"\b(video|videos|clip|clips|stream|youtube|timestamp|episode|show me|return all)\b"
+    r"\b(video|videos|clip|clips|stream|youtube|timestamp|episode|show me|return all|what is|who is|how does|why)\b"
     r"|@[\w_]{2,30}\b"
     r"|DATs?\b"
-    r"|Kyle\s+Samani\b",
+    r"|Kyle\s+Samani\b"
+    r"|firedancer\b|frankendancer\b|anza\b|alpenglow\b|aster\b",
     re.IGNORECASE,
 )
-
 def _should_use_video_tool(q: str) -> bool:
     return bool(_VIDEO_HINTS.search(q))
 

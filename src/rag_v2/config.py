@@ -16,8 +16,27 @@ class RetrievalConfig:
     enable_bm25: bool = os.getenv("ENABLE_BM25", "0") in ("1","true","yes")
     enable_ce: bool = os.getenv("ENABLE_RERANK_CE", "1") in ("1","true","yes")
 
-    stage1_topn: int = int(os.getenv("STAGE1_TOPN", "80"))
-    topk_post_rerank: int = int(os.getenv("TOPK_POST_RERANK", "10"))
+    stage1_topn: int = int(os.getenv("STAGE1_TOPN", "240"))     # was 80
+    topk_post_rerank: int = int(os.getenv("TOPK_POST_RERANK", "60"))  # was 10
+
+    # CE keep policy (relative + absolute)
+    ce_keep_percentile: float = float(os.getenv("CE_KEEP_PERCENTILE", "0.85"))
+    ce_min_keep: int = int(os.getenv("CE_MIN_KEEP", "25"))
+    ce_abs_min: float = float(os.getenv("CE_ABS_MIN", "0.32"))  # after sigmoid
+
+    # per-parent diversity + entity nudges
+    max_segments_per_parent: int = int(os.getenv("MAX_SEGMENTS_PER_PARENT", "8"))
+    entity_filter_boost: float = float(os.getenv("ENTITY_FILTER_BOOST", "1.5"))
+    entity_overlap_gain: float = float(os.getenv("ENTITY_OVERLAP_GAIN", "0.2"))
+
+    # stitching (merge adjacent child clips from same parent)
+    stitch_gap_seconds: int = int(os.getenv("STITCH_GAP_SECONDS", "12"))
+    stitch_target_tokens: int = int(os.getenv("STITCH_TARGET_TOKENS", "420"))
+    stitch_max_merge: int = int(os.getenv("STITCH_MAX_MERGE", "4"))
+
+    # output quoting
+    quote_min_count: int = int(os.getenv("QUOTE_MIN_COUNT", "4"))
+    max_final_nodes: int = int(os.getenv("MAX_FINAL_NODES", "12"))\
 
     streams_ns: str = os.getenv("PINECONE_STREAMS_NS", "streams")
     default_ns: str = os.getenv("PINECONE_DEFAULT_NS", "")
@@ -37,16 +56,19 @@ CFG = RetrievalConfig()
 
 # --- Entity canonicalization (add this) ---
 ENT_CANON_MAP = {
-    # Solana
     "solana": "Solana",
     "sol": "SOL",
-    "soul": "SOL",    # <- the troublemaker
+    "soul": "SOL",
     "$sol": "SOL",
     "$soul": "SOL",
-
-    # add more as needed
     "anza labs": "Anza",
     "firedancer": "Firedancer",
+    "anza": "Anza",
+    "anza labs": "Anza",
+    "firedancer": "Firedancer",
+    "frankendancer": "Firedancer",
+    "alpenglow": "Alpenglow",
+    "aster": "Aster",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

@@ -8,6 +8,8 @@ from typing import Optional
 from llama_index.core import Settings
 from llama_index.llms.openai import OpenAI
 
+from .config import CFG
+
 # --- resilient imports (run as module or script) ---
 try:
     from .app_main import bootstrap_query_engine_v2  # type: ignore
@@ -31,10 +33,16 @@ def _get_qe():
     return _QE
 
 def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
-    """
-    Agent tool: query the video/stream index and synthesize an answer
-    with links to relevant clips/segments.
-    """
     qe = _get_qe()
-    resp = qe.query(query)
+    # light instruction to increase depth + quotes with timestamps
+    enriched_q = (
+        query
+        + "\n\n"
+        + "Answer thoroughly using multiple distinct passages. "
+          f"Quote ≥{CFG.quote_min_count} short excerpts verbatim and include each clip's timestamp range in parentheses. "
+          "Prefer stitching adjacent clips from the same video when context helps. "
+          "End with a concise takeaway."
+    )
+    resp = qe.query(enriched_q)
     return clean_model_refs(str(resp))
+

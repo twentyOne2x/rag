@@ -115,6 +115,88 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             # last-resort: return raw as-is
             return raw
 
+    import math
+    import re
+
+    def _sigmoid(x: float) -> float:
+        try:
+            return 1.0 / (1.0 + math.exp(-float(x)))
+        except Exception:
+            return float(x)
+
+    def _percentile_cut(scores, p: float) -> float:
+        if not scores:
+            return float("inf")
+        s = sorted(scores)
+        idx = max(0, min(len(s) - 1, int(round(p * (len(s) - 1)))))
+        return float(s[idx])
+
+    def _rough_token_count(txt: str) -> int:
+        # ~4 chars/token heuristic
+        return max(1, len(txt) // 4)
+
+    def _hms_to_seconds(hms: str) -> int:
+        if not hms: return -1
+        try:
+            h, m, s = [int(x) for x in hms.split(":")]
+            return h * 3600 + m * 60 + s
+        except Exception:
+            return -1
+
+    def _stitch_adjacent(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
+        if not nodes:
+            return nodes
+        # group by parent, sort by start time
+        groups: Dict[str, List[NodeWithScore]] = {}
+        for n in nodes:
+            md = n.node.metadata or {}
+            pid = str(md.get("parent_id") or md.get("video_id"))
+            groups.setdefault(pid, []).append(n)
+        out: List[NodeWithScore] = []
+        gap_s = CFG.stitch_gap_seconds
+        target_tokens = CFG.stitch_target_tokens
+        max_merge = CFG.stitch_max_merge
+
+        for pid, rows in groups.items():
+            def _sec(n, k):
+                return _hms_to_seconds((n.node.metadata or {}).get(k) or "")
+            rows.sort(key=lambda r: _sec(r, "start_hms"))
+            i = 0
+            while i < len(rows):
+                chunk = [rows[i]]
+                i += 1
+                # greedily merge forward while gaps small and under token budget
+                while i < len(rows) and len(chunk) < max_merge:
+                    prev = chunk[-1]
+                    cur  = rows[i]
+                    end_prev = _sec(prev, "end_hms")
+                    start_cur = _sec(cur, "start_hms")
+                    if end_prev >= 0 and start_cur >= 0 and (start_cur - end_prev) <= gap_s:
+                        # check token budget
+                        merged_text = " ".join([c.node.get_content() for c in (chunk + [cur])])
+                        if _rough_token_count(merged_text) <= target_tokens:
+                            chunk.append(cur)
+                            i += 1
+                            continue
+                    break
+                # build a synthetic stitched node (reuse first node, extend metadata + text)
+                if len(chunk) == 1:
+                    out.append(chunk[0])
+                else:
+                    base = chunk[0]
+                    md = base.node.metadata or {}
+                    md["start_hms"] = (chunk[0].node.metadata or {}).get("start_hms")
+                    md["end_hms"]   = (chunk[-1].node.metadata or {}).get("end_hms")
+                    # concatenate text
+                    base.node.text = "\n".join(c.node.get_content() for c in chunk)
+                    # average/max score
+                    base.score = max(float(c.score or 0.0) for c in chunk)
+                    out.append(base)
+        # sort global again and trim
+        out.sort(key=lambda n: (n.score or 0.0), reverse=True)
+        return out[: CFG.max_final_nodes]
+
+
     # -------- sync path --------
     def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
         q = query_bundle.query_str
@@ -136,23 +218,61 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if hasattr(self._retriever, "debug_snapshot"):
                 trace.update(self._retriever.debug_snapshot())
 
-            # 2) Optional CE rerank
+            # 2) Optional CE rerank (entity/metadata-aware)
             if self._ce and self._ce.enabled and nodes:
                 packs = self._ce_pack(nodes)  # [(segment_id, text, stage1_score)]
                 trace["pre_ce"] = [{"segment_id": sid, "score_stage1": sc} for (sid, _t, sc) in packs]
+
+                metas: Dict[str, Dict[str, Any]] = {}
+                for n in nodes:
+                    md = n.node.metadata or {}
+                    sid = md.get("segment_id") or md.get("id") or n.node.node_id
+                    metas[sid] = {
+                        "entities": md.get("entities") or [],
+                        "canonical_entities": md.get("canonical_entities") or [],
+                        "node_type": md.get("node_type") or md.get("document_type"),
+                        "router_boost": md.get("router_boost"),
+                        "is_explainer": md.get("is_explainer"),
+                    }
+
                 t_ce = time_block()
-                rescored = self._ce.rerank(q, packs)  # [(sid, text, ce_score)]
+                rescored = self._ce.rerank_with_meta(q, packs, metas)  # [(sid, text, ce_score)]
                 trace["ce_ms"] = t_ce()
                 trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
                 nodes = self._reinject_scores(nodes, rescored)
+
+                # --- NEW: normalize CE -> [0,1] + percentile/absolute keep ---
+                sig = type(self)._sigmoid
+                pct = type(self)._percentile_cut
+                ce_norm = [sig(float(n.score or 0.0)) for n in nodes]
+                pcut = pct(ce_norm, CFG.ce_keep_percentile)
+                kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= CFG.ce_abs_min)]
+                if not kept:
+                    kept = nodes[: CFG.ce_min_keep]
+                elif len(kept) < CFG.ce_min_keep:
+                    # top up from highest CE nodes
+                    extra = [n for n in nodes if n not in kept][: (CFG.ce_min_keep - len(kept))]
+                    kept.extend(extra)
+                nodes = kept
+
+                trace["ce_keep_policy"] = {
+                    "percentile": CFG.ce_keep_percentile,
+                    "abs_min": CFG.ce_abs_min,
+                    "min_keep": CFG.ce_min_keep,
+                    "pcut": pcut,
+                    "kept_after_ce": len(nodes),
+                }
             else:
                 trace["ce_skipped"] = True
 
-            # 3) Keep top-K post-rerank
+            # 3) Clip width before stitching
             nodes = nodes[: CFG.topk_post_rerank]
 
-            # NEW: Apply entity canonicalization to retrieved nodes
+            # 4) Entity canonicalization on retrieved nodes
             nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+
+            # 5) Stitch adjacent clips for deeper context
+            nodes = self._stitch_adjacent(nodes)
 
             revent.on_end(payload={EventPayload.NODES: nodes})
         trace["retrieve_ms"] = t_retrieve()
@@ -168,17 +288,15 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             log.info("qe[done] query='%s' -> no results (%.2f ms)", q, trace["total_ms"])
             return Response("No results found.", source_nodes=[])
 
-        # 4) Synthesize + clean (includes final entity normalization)
+        # 6) Synthesize + clean (includes final entity normalization)
         t_synth = time_block()
         resp = self._synthesize_clean(query_bundle, nodes)
         trace["synthesize_ms"] = t_synth()
         trace["final_text"] = str(resp)
 
-        # 5) Total timing + emit logs
+        # 7) Total timing + emit logs
         trace["total_ms"] = t_total()
         log.debug(pretty(trace))
-
-        # Concise human log like v1:
         log.info(
             "qe[summary] q='%s' kept=%d synth=%.2f ms total=%.2f ms",
             q,
