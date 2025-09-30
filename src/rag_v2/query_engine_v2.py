@@ -146,20 +146,22 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
     def _stitch_adjacent(self, nodes: List[NodeWithScore]) -> List[NodeWithScore]:
         if not nodes:
             return nodes
-        # group by parent, sort by start time
+
         groups: Dict[str, List[NodeWithScore]] = {}
         for n in nodes:
             md = n.node.metadata or {}
             pid = str(md.get("parent_id") or md.get("video_id"))
             groups.setdefault(pid, []).append(n)
+
         out: List[NodeWithScore] = []
         gap_s = CFG.stitch_gap_seconds
         target_tokens = CFG.stitch_target_tokens
         max_merge = CFG.stitch_max_merge
 
         for pid, rows in groups.items():
-            def _sec(n, k):
-                return _hms_to_seconds((n.node.metadata or {}).get(k) or "")
+            def _sec(node, key):
+                return type(self)._hms_to_seconds((node.node.metadata or {}).get(key) or "")
+
             rows.sort(key=lambda r: _sec(r, "start_hms"))
             i = 0
             while i < len(rows):
@@ -168,34 +170,30 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 # greedily merge forward while gaps small and under token budget
                 while i < len(rows) and len(chunk) < max_merge:
                     prev = chunk[-1]
-                    cur  = rows[i]
+                    cur = rows[i]
                     end_prev = _sec(prev, "end_hms")
                     start_cur = _sec(cur, "start_hms")
                     if end_prev >= 0 and start_cur >= 0 and (start_cur - end_prev) <= gap_s:
-                        # check token budget
-                        merged_text = " ".join([c.node.get_content() for c in (chunk + [cur])])
-                        if _rough_token_count(merged_text) <= target_tokens:
+                        merged_text = " ".join(c.node.get_content() for c in (chunk + [cur]))
+                        if type(self)._rough_token_count(merged_text) <= target_tokens:
                             chunk.append(cur)
                             i += 1
                             continue
                     break
-                # build a synthetic stitched node (reuse first node, extend metadata + text)
+
                 if len(chunk) == 1:
                     out.append(chunk[0])
                 else:
                     base = chunk[0]
                     md = base.node.metadata or {}
                     md["start_hms"] = (chunk[0].node.metadata or {}).get("start_hms")
-                    md["end_hms"]   = (chunk[-1].node.metadata or {}).get("end_hms")
-                    # concatenate text
+                    md["end_hms"] = (chunk[-1].node.metadata or {}).get("end_hms")
                     base.node.text = "\n".join(c.node.get_content() for c in chunk)
-                    # average/max score
                     base.score = max(float(c.score or 0.0) for c in chunk)
                     out.append(base)
-        # sort global again and trim
+
         out.sort(key=lambda n: (n.score or 0.0), reverse=True)
         return out[: CFG.max_final_nodes]
-
 
     # -------- sync path --------
     def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
