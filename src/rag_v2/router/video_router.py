@@ -4,7 +4,7 @@ import re
 from typing import Dict, Any, Tuple, Set
 
 # re-use your existing patterns/helpers
-ROUTER_RE = re.compile(r"^(what is|who is|how does|why\b)", re.I)
+ROUTER_RE = re.compile(r"^(what is|who is|what['’]s|who['’]s|how does|why\b)", re.I)
 TICKER_RE = re.compile(r"(?:^|\s)\$[A-Z0-9]{2,6}\b")
 HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,30}\b")
 

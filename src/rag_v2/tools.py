@@ -42,6 +42,8 @@ def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
           f"Quote ≥{CFG.quote_min_count} short excerpts verbatim and include each clip's timestamp range in parentheses. "
           "Prefer stitching adjacent clips from the same video when context helps. "
           "End with a concise takeaway."
+        + "When quoting, attribute to the named speaker if metadata provides one "
+        + "(use `speaker` or infer from the video title); avoid phrases like “the speaker says”. "
     )
     resp = qe.query(enriched_q)
     return clean_model_refs(str(resp))

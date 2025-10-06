@@ -12,6 +12,36 @@ try:
 except Exception:
     CFG = None  # type: ignore
 
+# --- add near the top of logging_utils.py ---
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+def _is_video(meta: dict) -> bool:
+    dt = (meta.get("document_type") or "").lower()
+    return "channel_name" in meta or dt in ("youtube_video", "stream")
+
+
+def _hms_to_seconds(hms: str) -> int:
+    if not hms:
+        return -1
+    try:
+        h, m, s = [int(x) for x in hms.split(":")]
+        return h * 3600 + m * 60 + s
+    except Exception:
+        return -1
+
+def _add_time_param(url: str, seconds: int) -> str:
+    """Append/update t=Ns on the URL. Works for youtube.com and youtu.be."""
+    try:
+        seconds = max(0, int(seconds))
+        u = urlparse(url)
+        q = parse_qs(u.query)
+        q["t"] = [f"{seconds}s"]
+        new_q = urlencode(q, doseq=True)
+        return urlunparse((u.scheme, u.netloc, u.path, u.params, new_q, u.fragment))
+    except Exception:
+        sep = "&" if "?" in (url or "") else "?"
+        return f"{url}{sep}t={max(0, int(seconds))}s"
+
 
 def is_debug_enabled() -> bool:
     """
@@ -171,88 +201,90 @@ def _format_timestamp_range(start_hms: str, end_hms: str) -> str:
         return start_hms
     return ""
 
+def _node_meta_and_score(node_like):
+    score = getattr(node_like, "score", None)
+    if hasattr(node_like, "node") and getattr(node_like, "node") is not None:
+        meta = getattr(node_like.node, "metadata", {}) or {}
+    else:
+        meta = getattr(node_like, "metadata", {}) or {}
+    return meta, score
 
-def format_sources_v1_style(source_nodes: List) -> str:
-    """
-    Group by (title, clip_url) to show individual segments with their timestamps.
-    Format: [Title], [Timestamp], [Speaker], [Chapter], [Channel], [clip_url], [Date], [Score]
-    """
-    # Group by (title, clip_url) so each unique segment gets its own line
-    segments = []
 
-    for nws in source_nodes or []:
-        meta, score = _get_meta_and_score(nws)
+def format_metadata(response, source_nodes) -> str:
+    lines = []
+    if source_nodes is None:
+        source_nodes = getattr(response, "source_nodes", []) or []
 
+    rows = []
+    for nws in source_nodes:
+        meta, score = _node_meta_and_score(nws)
         title = meta.get("title") or "N/A"
-        clip_url = meta.get("clip_url") or meta.get("url") or "N/A"
-        start_hms = meta.get("start_hms") or ""
-        end_hms = meta.get("end_hms") or ""
-        speaker = meta.get("speaker") or ""
-        chapter = meta.get("chapter") or ""
-        channel_name = meta.get("channel_name") or "N/A"
-        release_date = meta.get("published_at") or meta.get("published_date") or "N/A"
+        speaker = meta.get("speaker")
+        channel = meta.get("channel_name") or "N/A"
+        base_url = meta.get("clip_url") or meta.get("url") or "N/A"
+        date = meta.get("published_at") or meta.get("published_date") or "N/A"
+        start_hms = meta.get("start_hms")
+        end_hms = meta.get("end_hms")
 
-        is_video = "channel_name" in meta or meta.get("document_type") in ("youtube_video", "stream")
+        # timestamped link (start - 5s)
+        link_url = base_url
+        if _is_video(meta):
+            start_s = _hms_to_seconds(start_hms)
+            if start_s >= 0:
+                link_url = _add_time_param(base_url, max(0, start_s - 5))
 
-        timestamp_str = _format_timestamp_range(start_hms, end_hms)
-
-        segments.append({
+        rows.append({
             "title": title,
-            "timestamp": timestamp_str,
             "speaker": speaker,
-            "chapter": chapter,
-            "channel_name": channel_name,
-            "clip_url": clip_url,
-            "release_date": release_date,
-            "score": score if score is not None else 0.0,
-            "is_video": is_video,
-            "authors": meta.get("authors") if not is_video else None,
-            "pdf_link": meta.get("pdf_link") if not is_video else None,
+            "channel": channel,
+            "url": link_url,
+            "date": date,
+            "score": float(score) if score is not None else 0.0,
+            "excerpt": _format_timestamp_range(start_hms, end_hms),
+            "is_video": _is_video(meta),
+            "authors": meta.get("authors")
         })
 
-    # Sort by score descending
-    segments.sort(key=lambda x: x["score"], reverse=True)
+    # sort by score desc
+    rows.sort(key=lambda r: r["score"], reverse=True)
 
-    lines = []
-    for seg in segments:
-        if seg["is_video"]:
-            # Video format with timestamp
-            parts = [f"[Title]: {seg['title']}"]
-
-            if seg["timestamp"]:
-                parts.append(f"[Timestamp]: {seg['timestamp']}")
-
-            if seg["speaker"]:
-                parts.append(f"[Speaker]: {seg['speaker']}")
-
-            if seg["chapter"]:
-                parts.append(f"[Chapter]: {seg['chapter']}")
-
-            parts.extend([
-                f"[Channel]: {seg['channel_name']}",
-                f"[Clip URL]: {seg['clip_url']}",
-                f"[Date]: {seg['release_date']}",
-                f"[Score]: {seg['score']:.4f}"
-            ])
-
-            lines.append(", ".join(parts))
-        else:
-            # Non-video (papers/posts) format
+    for r in rows:
+        if r["is_video"]:
             parts = [
-                f"[Title]: {seg['title']}",
-                f"[Authors]: {seg['authors'] or 'N/A'}",
-                f"[Link]: {seg['pdf_link'] or seg['clip_url']}",
-                f"[Date]: {seg['release_date']}",
-                f"[Score]: {seg['score']:.4f}"
+                f"[Title]: {r['title']}",
+                *( [f"[Speaker]: {r['speaker']}"] if r["speaker"] else [] ),
+                f"[Channel]: {r['channel']}",
+                f"[Clip URL]: {r['url']}",
+                f"[Date]: {r['date']}",
+                f"[Score]: {r['score']:.4f}",
             ]
-            lines.append(", ".join(parts))
+        else:
+            formatted_authors = None
+            if r["authors"]:
+                try:
+                    formatted_authors = ", ".join(str(r["authors"]).split(", "))
+                except Exception:
+                    formatted_authors = str(r["authors"])
+            parts = [
+                f"[Title]: {r['title']}",
+                f"[Authors]: {formatted_authors or 'N/A'}",
+                f"[Link]: {r['url']}",
+                f"[Date]: {r['date']}",
+                f"[Score]: {r['score']:.4f}",
+            ]
+
+        # ➜ excerpt LAST
+        if r["excerpt"]:
+            parts.append(f"[Excerpt]: {r['excerpt']}")
+
+        lines.append(", ".join(parts))
 
     return "\n".join(lines)
 
 
+
 def append_sources_block(text: str, source_nodes: List) -> str:
-    """Append the timestamp-aware sources section to the answer text."""
-    suffix = format_sources_v1_style(source_nodes)
+    suffix = format_metadata(response=None, source_nodes=source_nodes)
     if not suffix:
         return text
     return f"{text}\n\n Fetched based on the following sources: \n{suffix}"

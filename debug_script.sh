@@ -60,11 +60,6 @@ if [ "$logs_processed" = true ]; then
 fi
 
 echo "\`\`\`"  # End triple backticks
-if [ "$logs_processed" = true ]; then
-    echo "Please fix"
-else
-    echo "Given the above: "
-fi
 } | xclip -selection clipboard
 
 echo "Logs and script content have been copied to clipboard."

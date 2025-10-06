@@ -31,7 +31,8 @@ def _configure_models() -> None:
 
 # Simple heuristic router: send to video search when query looks retrieval-ish
 _VIDEO_HINTS = re.compile(
-    r"\b(video|videos|clip|clips|stream|youtube|timestamp|episode|show me|return all|what is|who is|how does|why)\b"
+    r"\b(video|videos|clip|clips|stream|youtube|timestamp|episode|show me|return all|"
+    r"what is|who is|how does|why|what['’]s|who['’]s)\b"
     r"|@[\w_]{2,30}\b"
     r"|DATs?\b"
     r"|Kyle\s+Samani\b"
@@ -43,15 +44,8 @@ def _should_use_video_tool(q: str) -> bool:
 
 
 def _llm_answer(q: str) -> str:
-    """Direct LLM fallback for broad/abstract questions."""
-    # Settings.llm.complete(...) returns a CompletionResponse in most versions
-    try:
-        resp = Settings.llm.complete(q)
-        # Support either .text or str(resp)
-        return getattr(resp, "text", str(resp))
-    except Exception as e:
-        return f"(LLM error: {e})"
-
+    # deprecated; we no longer fall back to an LLM
+    return "I don’t know."
 
 class TinyV2Agent:
     """
@@ -72,8 +66,12 @@ class TinyV2Agent:
                 print("[router] -> video tool")
             return search_videos_and_clips(question)
         if self.verbose:
-            print("[router] -> LLM fallback")
-        return _llm_answer(question)
+            print("[router] -> no matching tool")
+        # Explicitly avoid hallucinations
+        return (
+            "I don’t know based on the sources I can search. "
+            "Try asking for videos/clips and include names, channels, or tickers."
+        )
 
 
 def build_agent_v2(verbose: bool = True) -> TinyV2Agent:
@@ -85,17 +83,17 @@ if __name__ == "__main__":
 
     # Provide questions via CLI args; fall back to defaults
     questions = sys.argv[1:] or [
-        "return all videos about DATs and Kyle Samani",
-        "what is a DAT on Solana?",
-        "show me all clips where Kyle Samani details how DATs will be deployed in DeFi",
+        # "return all videos about DATs and Kyle Samani",
+        # "what is a DAT on Solana?",
+        # "show me all clips where Kyle Samani details how DATs will be deployed in DeFi",
         "who's cupsey?",
         "what's aster?",
-        "what's alpenglow?",
-        "what's firedancer?",
-        "return all videos about firedancer",
-        "return all videos from Anza",
-        "how much money has been raised on solana DATs and where will it be deployed in defi?",
-        "what is the first and most recent mention of firedancer?"
+        # "what's alpenglow?",
+        # "what's firedancer?",
+        # "return all videos about firedancer",
+        # "return all videos from Anza",
+        # "how much money has been raised on solana DATs and where will it be deployed in defi?",
+        # "what is the first and most recent mention of firedancer?"
     ]
 
     for i, q in enumerate(questions, 1):
