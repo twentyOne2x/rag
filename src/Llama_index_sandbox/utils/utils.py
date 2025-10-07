@@ -195,7 +195,7 @@ def load_csv_data(file_path: str) -> pd.DataFrame:
 def load_vector_store_from_pinecone_database(
     delete_old_index: bool = False,
     new_index: bool = False,
-    index_name: str = os.environ.get("PINECONE_INDEX_NAME", "icmfyi"),
+    index_name: str = os.environ.get("PINECONE_INDEX_NAME", "icmfyi-v2"),
 ):
     pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 
@@ -215,7 +215,7 @@ def load_vector_store_from_pinecone_database(
     return PineconeVectorStore(pinecone_index=pinecone_index)
 
 def load_vector_store_from_pinecone_database_legacy(
-    index_name: str = os.environ.get("PINECONE_INDEX_NAME", "icmfyi")
+    index_name: str = os.environ.get("PINECONE_INDEX_NAME", "icmfyi-v2")
 ):
     """
     Keep this only if you still rely on legacy paths elsewhere.

@@ -18,6 +18,9 @@ ENT_CANON_MAP = {
     "aster": "Aster",
     "Salana": "Solana",
     "Cupsy": "Cupsey",
+    "cupsy":"Cupsey",
+    "haster":"aster",
+    "astro":"astro",
 }
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
 

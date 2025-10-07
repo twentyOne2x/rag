@@ -57,6 +57,7 @@ class RetrievalConfig:
     enable_early_abort: bool = os.getenv("ENABLE_EARLY_ABORT", "1") in ("1","true","yes")
     # Pre-CE gate (uses stage1/meta-boosted scores; tune to your store)
     stage1_top_min: float = float(os.getenv("STAGE1_TOP_MIN", "0.02"))
+    stage1_hard_min: float = float(os.getenv("STAGE1_HARD_MIN", "0.05"))
     stage1_min_relevant: int = int(os.getenv("STAGE1_MIN_RELEVANT", "1"))
     # Post-CE gate (uses sigmoid-normalized CE scores; lower than ce_abs_min)
     ce_max_norm_min: float = float(os.getenv("CE_MAX_NORM_MIN", "0.28"))
@@ -90,6 +91,9 @@ ENT_CANON_MAP = {
     "aster": "Aster",
     "Salana": "Solana",
     "Cupsy": "Cupsey",
+    "cupsy":"Cupsey",
+    "haster": "aster",
+    "astro": "astro",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

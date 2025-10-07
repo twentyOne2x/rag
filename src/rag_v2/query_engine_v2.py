@@ -234,6 +234,13 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         if not (CFG.enable_early_abort and nodes):
             return None
         top = max(float(n.score or 0.0) for n in nodes) if nodes else 0.0
+
+        # unconditional cutoff
+        if top < CFG.stage1_hard_min:
+            log.info("qe[early-abort] q='%s' reason=stage1_hard_min top=%.5f<th=%.5f",
+                     q, top, CFG.stage1_hard_min)
+            return Response(CFG.abort_message, source_nodes=[])
+
         qents = self._qents(q)
         rel = 0
         for n in nodes:

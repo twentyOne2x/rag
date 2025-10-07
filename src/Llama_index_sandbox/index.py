@@ -53,7 +53,7 @@ def initialise_vector_store(
     """
     Create (or recreate) a Pinecone index and wrap it in a core PineconeVectorStore.
     """
-    index_name = os.environ.get("PINECONE_INDEX_NAME", "icmfyi")
+    index_name = os.environ.get("PINECONE_INDEX_NAME", "icmfyi-v2")
     api_key = os.environ["PINECONE_API_KEY"]
 
     pc = Pinecone(api_key=api_key)
