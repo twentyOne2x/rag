@@ -20,10 +20,14 @@ def _is_video(meta: dict) -> bool:
     return "channel_name" in meta or dt in ("youtube_video", "stream")
 
 
-def _hms_to_seconds(hms: str) -> int:
+def _hms_to_seconds(hms: str | None) -> int:
+    """Accept HH:MM:SS or HH:MM:SS.mmm; return -1 on failure."""
     if not hms:
         return -1
     try:
+        # strip fractional part if present
+        if "." in hms:
+            hms = hms.split(".", 1)[0]
         h, m, s = [int(x) for x in hms.split(":")]
         return h * 3600 + m * 60 + s
     except Exception:
@@ -193,7 +197,7 @@ def _get_meta_and_score(nws) -> Tuple[dict, float]:
     return meta, float(score) if score is not None else None
 
 
-def _format_timestamp_range(start_hms: str, end_hms: str) -> str:
+def _format_timestamp_range(start_hms: str | None, end_hms: str | None) -> str:
     """Format timestamp range for display, e.g., '00:12:34–00:15:22'"""
     if start_hms and end_hms:
         return f"{start_hms}–{end_hms}"
@@ -201,13 +205,43 @@ def _format_timestamp_range(start_hms: str, end_hms: str) -> str:
         return start_hms
     return ""
 
+def _excerpt_edges(txt: str, n_words: int = 12) -> str:
+    if not txt:
+        return ""
+    words = re.findall(r"\S+", txt)
+    if len(words) <= n_words * 2:
+        return " ".join(words)
+    start = " ".join(words[:n_words])
+    end = " ".join(words[-n_words:])
+    return f"{start} … {end}"
+
 def _node_meta_and_score(node_like):
     score = getattr(node_like, "score", None)
     if hasattr(node_like, "node") and getattr(node_like, "node") is not None:
         meta = getattr(node_like.node, "metadata", {}) or {}
+        text = node_like.node.get_content() if hasattr(node_like.node, "get_content") else ""
     else:
         meta = getattr(node_like, "metadata", {}) or {}
-    return meta, score
+        text = getattr(node_like, "text", "") or ""
+    return meta, score, text
+
+
+# --- date + title cleaning helpers --------------------------------------------
+_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+# Matches leading "YYYY-MM-DD_<11charID>_" prefix
+_DATE_ID_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_[A-Za-z0-9_-]{11}_")
+
+def _infer_date(row_meta: dict) -> str | None:
+    title = row_meta.get("title") or row_meta.get("parent_title") or ""
+    m = _DATE_RE.search(title)
+    return m.group(1) if m else None
+
+def _clean_title(raw_title: str) -> str:
+    """Strip 'YYYY-MM-DD_<videoid>_' prefix from titles if present."""
+    if not raw_title:
+        return raw_title
+    cleaned = _DATE_ID_PREFIX_RE.sub("", raw_title).strip()
+    return cleaned or raw_title
 
 
 def format_metadata(response, source_nodes) -> str:
@@ -217,44 +251,60 @@ def format_metadata(response, source_nodes) -> str:
 
     rows = []
     for nws in source_nodes:
-        meta, score = _node_meta_and_score(nws)
-        title = meta.get("title") or "N/A"
-        speaker = meta.get("speaker")
-        channel = meta.get("channel_name") or "N/A"
-        base_url = meta.get("clip_url") or meta.get("url") or "N/A"
-        date = meta.get("published_at") or meta.get("published_date") or "N/A"
+        meta, score, node_text = _node_meta_and_score(nws)
+
+        # title (clean) + channel
+        raw_title = meta.get("title") or meta.get("parent_title") or "N/A"
+        title = _clean_title(raw_title)
+        channel = meta.get("channel_name") or meta.get("parent_channel_name") or "N/A"
+
+        # date with fallbacks (incl. parse from title)
+        date = (
+            meta.get("published_at")
+            or meta.get("parent_published_at")
+            or meta.get("published_date")
+            or _infer_date(meta)
+            or "N/A"
+        )
+
+        # build exact-start link (no -5s offset)
+        base_url = meta.get("clip_url") or meta.get("url") or ""
         start_hms = meta.get("start_hms")
         end_hms = meta.get("end_hms")
-
-        # timestamped link (start - 5s)
         link_url = base_url
         if _is_video(meta):
             start_s = _hms_to_seconds(start_hms)
             if start_s >= 0:
-                link_url = _add_time_param(base_url, max(0, start_s - 5))
+                link_url = _add_time_param(base_url, start_s)
+
+        excerpt_range = _format_timestamp_range(start_hms, end_hms)
+        excerpt_edges = _excerpt_edges(node_text or "")
 
         rows.append({
             "title": title,
-            "speaker": speaker,
+            "speaker": meta.get("speaker"),
             "channel": channel,
-            "url": link_url,
+            "url": link_url or "N/A",
             "date": date,
             "score": float(score) if score is not None else 0.0,
-            "excerpt": _format_timestamp_range(start_hms, end_hms),
+            "excerpt_range": excerpt_range,
+            "excerpt_edges": excerpt_edges,
             "is_video": _is_video(meta),
-            "authors": meta.get("authors")
+            "authors": meta.get("authors"),
         })
 
-    # sort by score desc
     rows.sort(key=lambda r: r["score"], reverse=True)
 
     for r in rows:
         if r["is_video"]:
+            # Markdown link + timestamp range right after the title
+            head = f"[Title]: [{r['title']}]({r['url']})"
+            if r["excerpt_range"]:
+                head += f" ({r['excerpt_range']})"
             parts = [
-                f"[Title]: {r['title']}",
+                head,
                 *( [f"[Speaker]: {r['speaker']}"] if r["speaker"] else [] ),
                 f"[Channel]: {r['channel']}",
-                f"[Clip URL]: {r['url']}",
                 f"[Date]: {r['date']}",
                 f"[Score]: {r['score']:.4f}",
             ]
@@ -266,21 +316,18 @@ def format_metadata(response, source_nodes) -> str:
                 except Exception:
                     formatted_authors = str(r["authors"])
             parts = [
-                f"[Title]: {r['title']}",
+                f"[Title]: [{r['title']}]({r['url']})",
                 f"[Authors]: {formatted_authors or 'N/A'}",
-                f"[Link]: {r['url']}",
                 f"[Date]: {r['date']}",
                 f"[Score]: {r['score']:.4f}",
             ]
 
-        # ➜ excerpt LAST
-        if r["excerpt"]:
-            parts.append(f"[Excerpt]: {r['excerpt']}")
+        if r["excerpt_range"] and r["excerpt_edges"]:
+            parts.append(f"[Excerpt]: {r['excerpt_edges']}")
 
         lines.append(", ".join(parts))
 
     return "\n".join(lines)
-
 
 
 def append_sources_block(text: str, source_nodes: List) -> str:

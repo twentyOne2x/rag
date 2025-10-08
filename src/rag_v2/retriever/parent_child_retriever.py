@@ -1,5 +1,7 @@
 # --- DROP-IN: entity-aware retrieve (filtered merge + overlap boosts) ---
 from __future__ import annotations
+
+import os
 from typing import List, Dict, Any, Tuple
 import re
 
@@ -8,6 +10,7 @@ from ..router.video_router import TICKER_RE, HANDLE_RE, wants_definition
 from ..postprocessors.entity_utils import canon_entity
 from ..utils.scoring import recency_decay, apply_multiplier
 from ..logging_utils import setup_logger, node_brief
+from ..vector_store.parent_resolver import fetch_parent_meta
 
 log = setup_logger("rag_v2.retriever")
 
@@ -174,10 +177,68 @@ class ParentChildRetrieverV2:
             float(getattr(CFG, "entity_filter_boost", 1.35)),
         )
 
+        # --- NEW: enrich children with parent metadata (title/channel/date/url) BEFORE boosts ---
+        parent_ids = set()
+        for n in merged:
+            md = n.node.metadata or {}
+            pid = md.get("parent_id") or md.get("video_id")
+            if pid:
+                parent_ids.add(str(pid))
+
+        parent_meta_dbg = {"requested": len(parent_ids), "found": 0, "enriched_nodes": 0, "missed_nodes": 0,
+                           "error": None}
+        if parent_ids:
+            try:
+                # lazy import here to keep this method drop-in
+                from ..vector_store.parent_resolver import fetch_parent_meta
+                ns = os.getenv("PINECONE_NAMESPACE", "videos")
+                pres = fetch_parent_meta(parent_ids)  # resolver has its own "videos" default
+                sample = next(iter(parent_ids)) if parent_ids else None
+                if sample:
+                    print("[debug] sample parent_id:", sample, "->", pres.get(str(sample)))
+
+                parent_meta_dbg["found"] = sum(1 for _k, v in pres.items() if v)
+
+                hit, miss = 0, 0
+                for n in merged:
+                    md = n.node.metadata or {}
+                    pid = str(md.get("parent_id") or md.get("video_id") or "")
+                    pm = pres.get(pid) or {}
+                    if pm:
+                        md.setdefault("parent_title", pm.get("parent_title"))
+                        md.setdefault("parent_channel_name", pm.get("parent_channel_name"))
+                        md.setdefault("parent_published_at", pm.get("parent_published_at"))
+                        md.setdefault("parent_url", pm.get("parent_url"))
+                        if not md.get("title") and pm.get("parent_title"):
+                            md["title"] = pm["parent_title"]
+                        if not md.get("channel_name") and pm.get("parent_channel_name"):
+                            md["channel_name"] = pm["parent_channel_name"]
+                        if not md.get("published_at") and pm.get("parent_published_at"):
+                            md["published_at"] = pm["parent_published_at"]
+                        if not md.get("url") and pm.get("parent_url"):
+                            md["url"] = pm["parent_url"]
+                        n.node.metadata = md
+                        hit += 1  # <-- add this
+                    else:
+                        miss += 1
+                parent_meta_dbg["enriched_nodes"] = hit
+                parent_meta_dbg["missed_nodes"] = miss
+
+                log.info(
+                    "retriever[parent-meta] parents=%d found=%d enriched_nodes=%d missed_nodes=%d",
+                    parent_meta_dbg["requested"],
+                    parent_meta_dbg["found"],
+                    parent_meta_dbg["enriched_nodes"],
+                    parent_meta_dbg["missed_nodes"],
+                )
+            except Exception as e:
+                parent_meta_dbg["error"] = str(e)
+                log.warning("retriever[parent-meta] enrichment skipped due to error: %s", e)
+
         # Apply metadata boosts (recency/router/entity/streams)
         merged, boost_details = self._apply_metadata_boosts(merged, q, qents_lc)
 
-        # --- NEW: per-parent diversity cap BEFORE neighbor expansion ---
+        # --- per-parent diversity cap BEFORE neighbor expansion ---
         by_parent: Dict[str, List[Any]] = {}
         for n in merged:
             pid = (n.node.metadata or {}).get("parent_id") or (n.node.metadata or {}).get("video_id")
@@ -203,6 +264,7 @@ class ParentChildRetrieverV2:
             "stage1_scores": stage1_scores,
             "stage1_doc_types": by_dtype,
             "entity_filtered": filt_dbg,
+            "parent_meta": parent_meta_dbg,  # <-- NEW
             "after_metadata_boosts": boost_details,
             "neighbor_expansion": expanded_map,
             "pre_ce_topN": [node_brief(n) for n in neighbors_topn],

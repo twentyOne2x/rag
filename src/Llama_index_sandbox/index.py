@@ -109,16 +109,63 @@ def load_nodes_into_vector_store_create_index(
     return index
 
 
+# src/Llama_index_sandbox/index.py
+import logging, os
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+
+def _detect_ns_attr(vs):
+    if hasattr(vs, "_namespace"):
+        return "_namespace"
+    if hasattr(vs, "namespace"):
+        return "namespace"
+    return None
+
+def _get_ns(vs):
+    attr = _detect_ns_attr(vs)
+    return getattr(vs, attr) if attr else None
+
+def _get_index_name(vs):
+    # Try multiple shapes across LI versions
+    for attr in ("_index", "index", "_pinecone_index", "pinecone_index"):
+        idx = getattr(vs, attr, None)
+        if idx is None:
+            continue
+        for name_attr in ("_name", "name"):
+            val = getattr(idx, name_attr, None)
+            if val:
+                return val
+    return None
+
+def _force_pinecone_namespace(vs, ns: str) -> None:
+    """Force namespace on a PineconeVectorStore across LI versions + log it."""
+    try:
+        idx_name = _get_index_name(vs)
+        ns_attr  = _detect_ns_attr(vs)
+        ns_before = _get_ns(vs)
+
+        logging.info(
+            "[pinecone] reader pre: index=%r ns_attr=%r ns_before=%r env{INDEX=%r, NAMESPACE=%r}",
+            idx_name, ns_attr, ns_before,
+            os.getenv("PINECONE_INDEX_NAME"), os.getenv("PINECONE_NAMESPACE"),
+        )
+
+        if ns_attr:
+            setattr(vs, ns_attr, ns)
+            ns_after = _get_ns(vs)
+            logging.info(
+                "[pinecone] reader post: index=%r ns_attr=%r ns_after=%r (target=%r)",
+                idx_name, ns_attr, ns_after, ns,
+            )
+        else:
+            logging.warning("[pinecone] reader: no namespace attribute found on store; cannot set %r", ns)
+    except Exception as e:
+        logging.warning("[pinecone] could not enforce namespace %r: %s", ns, e)
+
+
 @timeit
 def load_index_from_disk() -> CustomVectorStoreIndex:
     """
     Load an existing Pinecone vector store and wrap it as a CustomVectorStoreIndex.
-
-    IMPORTANT:
-    - Some parts of your pipeline still use legacy retrievers which ignore
-      Settings.embed_model. Those need an explicit ServiceContext carrying the
-      3072-dim embedder, or Pinecone will reject 1536-dim queries against a
-      3072-dim index.
     """
     # Build a service context once, using the globally-configured LLM if present
     try:
@@ -128,12 +175,21 @@ def load_index_from_disk() -> CustomVectorStoreIndex:
         llm = None
     service_context = _make_service_context(llm=llm)
 
+    # Default namespace: 'videos' (overridable via env)
+    target_ns = os.getenv("PINECONE_NAMESPACE", "videos")
+    target_idx = os.getenv("PINECONE_INDEX_NAME", "icmfyi-v2")
+    logging.info("[pinecone] loader env: INDEX=%r NAMESPACE=%r (default ns='videos')", target_idx, target_ns)
+
     # Primary (core) loader
     try:
         vector_store = load_vector_store_from_pinecone_database()
+        logging.info("[pinecone] loader path=core store_cls=%s", type(vector_store).__name__)
+        if isinstance(vector_store, PineconeVectorStore):
+            _force_pinecone_namespace(vector_store, target_ns)
+
         index = CustomVectorStoreIndex.from_vector_store(
             vector_store,
-            service_context=service_context,  # harmless on core, required on legacy
+            service_context=service_context,
         )
         logging.info("Successfully loaded index from Pinecone (core store).")
         return index
@@ -144,9 +200,13 @@ def load_index_from_disk() -> CustomVectorStoreIndex:
         # Fallback to legacy loader if needed (kept for migration period)
         try:
             vector_store_legacy = load_vector_store_from_pinecone_database_legacy()
+            logging.info("[pinecone] loader path=legacy store_cls=%s", type(vector_store_legacy).__name__)
+            if isinstance(vector_store_legacy, PineconeVectorStore):
+                _force_pinecone_namespace(vector_store_legacy, target_ns)
+
             index = CustomVectorStoreIndex.from_vector_store(
                 vector_store_legacy,
-                service_context=service_context,  # enforce 3072-dim on legacy
+                service_context=service_context,
             )
             logging.info("Successfully loaded index from Pinecone (legacy store).")
             return index
@@ -157,6 +217,10 @@ def load_index_from_disk() -> CustomVectorStoreIndex:
             # Last-ditch: construct a plain VectorStoreIndex if Custom fails
             try:
                 vector_store = load_vector_store_from_pinecone_database()
+                logging.info("[pinecone] loader path=plain store_cls=%s", type(vector_store).__name__)
+                if isinstance(vector_store, PineconeVectorStore):
+                    _force_pinecone_namespace(vector_store, target_ns)
+
                 index = VectorStoreIndex.from_vector_store(
                     vector_store,
                     service_context=service_context,

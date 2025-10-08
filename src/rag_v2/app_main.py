@@ -51,6 +51,39 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50):
     # Load index (will inherit Settings.embed_model for query embeddings)
     index = load_index_from_disk()
 
+    try:
+        from llama_index.vector_stores.pinecone import PineconeVectorStore
+
+        vs = getattr(index, "_vector_store", None)
+        if isinstance(vs, PineconeVectorStore):
+            # Try multiple spots – LI/Pinecone versions differ
+            idx_obj = getattr(vs, "_index", None) or getattr(vs, "index", None)
+            idx_name = (
+                    getattr(vs, "_index_name", None)
+                    or getattr(vs, "index_name", None)
+                    or getattr(idx_obj, "name", None)
+                    or getattr(idx_obj, "_name", None)
+                    or os.getenv("PINECONE_INDEX_NAME")  # last resort: env
+            )
+
+            ns_current = getattr(vs, "_namespace", None) or os.getenv("PINECONE_NAMESPACE", "videos")
+            print(f"[pinecone] reader index={idx_name} namespace={ns_current!r}")
+
+            target_ns = os.getenv("PINECONE_NAMESPACE", "videos")
+            if ns_current != target_ns:
+                setattr(vs, "_namespace", target_ns)
+                ns_current = target_ns
+                print(f"[pinecone] forced namespace to {ns_current!r}")
+
+            # <<< CRITICAL: export both so parent_resolver uses the SAME index/ns >>>
+            if idx_name:
+                os.environ["PINECONE_INDEX_NAME"] = idx_name
+            os.environ["PINECONE_NAMESPACE"] = ns_current
+        else:
+            print("[pinecone] Not a PineconeVectorStore; parent enrichment will be skipped.")
+    except Exception as e:
+        print(f"[pinecone] namespace check skipped: {e}")
+
     # Build base retriever, then wrap with ParentChildRetrieverV2
     base_retriever = index.as_retriever(similarity_top_k=similarity_top_k, verbose=False)
     pc_retriever = ParentChildRetrieverV2(base_retriever)

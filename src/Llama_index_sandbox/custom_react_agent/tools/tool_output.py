@@ -7,7 +7,6 @@ from pydantic import Field
 
 from src.rag_v2.logging_utils import format_metadata
 
-
 def _hms_to_seconds(hms: str | None) -> int:
     if not hms:
         return -1
