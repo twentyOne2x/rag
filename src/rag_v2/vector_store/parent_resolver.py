@@ -24,6 +24,13 @@ def _infer_date_from_title(meta: Dict[str, Any]) -> str | None:
     m = _DATE_RE.search(title)
     return m.group(1) if m else None
 
+import re
+_DATE_ID_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_[A-Za-z0-9_-]{11}_")
+def _clean_title(raw: str | None) -> str:
+    if not raw: return raw or ""
+    return _DATE_ID_PREFIX_RE.sub("", raw).strip()
+
+
 def fetch_parent_meta(parent_ids: Iterable[str], namespace: str | None = None) -> Dict[str, Dict[str, str]]:
     """
     Fetch parent rows (by id) from Pinecone and return a minimal dict per id.
@@ -72,10 +79,10 @@ def fetch_parent_meta(parent_ids: Iterable[str], namespace: str | None = None) -
 
         # map to the few fields children/UI need
         mapped = {
-            "parent_title": meta.get("title"),
+            "parent_title": _clean_title(meta.get("title")),
             "parent_channel_name": meta.get("channel_name"),
             "parent_published_at": date,
-            "parent_published_date": date,  # alias to make downstream fallbacks simpler
+            "parent_published_date": date,
             "parent_url": (str(meta.get("url")) if meta.get("url") is not None else None),
         }
         _CACHE[str(pid)] = mapped

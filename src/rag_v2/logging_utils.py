@@ -136,6 +136,15 @@ _CLEAN_PATTERNS: Iterable[re.Pattern] = [
 ]
 
 
+_DATE_ID_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_[A-Za-z0-9_-]{11}_")  # already present above
+def scrub_link_titles(markdown: str) -> str:
+    # Replace [YYYY-MM-DD_<id>_Title](url) -> [Title](url)
+    def _fix(m):
+        text, url = m.group(1), m.group(2)
+        cleaned = _DATE_ID_PREFIX_RE.sub("", text).strip()
+        return f"[{cleaned}]({url})"
+    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _fix, markdown)
+
 def clean_model_refs(text: str) -> str:
     if not text:
         return text
@@ -144,6 +153,7 @@ def clean_model_refs(text: str) -> str:
         out = pat.sub("", out)
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
+    out = scrub_link_titles(out)     # <--- add this line
     return out.strip()
 
 
@@ -298,7 +308,7 @@ def format_metadata(response, source_nodes) -> str:
     for r in rows:
         if r["is_video"]:
             # Markdown link + timestamp range right after the title
-            head = f"[Title]: [{r['title']}]({r['url']})"
+            head = f"[Title]: {r['title']}"
             if r["excerpt_range"]:
                 head += f" ({r['excerpt_range']})"
             parts = [
@@ -316,7 +326,7 @@ def format_metadata(response, source_nodes) -> str:
                 except Exception:
                     formatted_authors = str(r["authors"])
             parts = [
-                f"[Title]: [{r['title']}]({r['url']})",
+                f"[Title]: {r['title']}",
                 f"[Authors]: {formatted_authors or 'N/A'}",
                 f"[Date]: {r['date']}",
                 f"[Score]: {r['score']:.4f}",

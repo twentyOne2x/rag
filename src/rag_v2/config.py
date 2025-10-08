@@ -81,6 +81,7 @@ ENT_CANON_MAP = {
     "soul": "SOL",
     "$sol": "SOL",
     "$soul": "SOL",
+    "Seoul": "SOL",
     "anza labs": "Anza",
     "firedancer": "Firedancer",
     "anza": "Anza",

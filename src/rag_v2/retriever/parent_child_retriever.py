@@ -9,7 +9,7 @@ from ..config import CFG
 from ..router.video_router import TICKER_RE, HANDLE_RE, wants_definition
 from ..postprocessors.entity_utils import canon_entity
 from ..utils.scoring import recency_decay, apply_multiplier
-from ..logging_utils import setup_logger, node_brief
+from ..logging_utils import setup_logger, node_brief, _clean_title
 from ..vector_store.parent_resolver import fetch_parent_meta
 
 log = setup_logger("rag_v2.retriever")
@@ -205,18 +205,20 @@ class ParentChildRetrieverV2:
                     pid = str(md.get("parent_id") or md.get("video_id") or "")
                     pm = pres.get(pid) or {}
                     if pm:
-                        md.setdefault("parent_title", pm.get("parent_title"))
+                        md.setdefault("parent_title", _clean_title(pm.get("parent_title")))
                         md.setdefault("parent_channel_name", pm.get("parent_channel_name"))
                         md.setdefault("parent_published_at", pm.get("parent_published_at"))
                         md.setdefault("parent_url", pm.get("parent_url"))
                         if not md.get("title") and pm.get("parent_title"):
-                            md["title"] = pm["parent_title"]
+                            md["title"] = _clean_title(pm["parent_title"])
                         if not md.get("channel_name") and pm.get("parent_channel_name"):
                             md["channel_name"] = pm["parent_channel_name"]
                         if not md.get("published_at") and pm.get("parent_published_at"):
                             md["published_at"] = pm["parent_published_at"]
                         if not md.get("url") and pm.get("parent_url"):
                             md["url"] = pm["parent_url"]
+                        if md.get("title"):
+                            md["title"] = _clean_title(md["title"])
                         n.node.metadata = md
                         hit += 1  # <-- add this
                     else:
