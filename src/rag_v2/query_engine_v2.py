@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
-from typing import List, Tuple, Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from llama_index.core.base.base_query_engine import BaseQueryEngine
 from llama_index.core.base.response.schema import RESPONSE_TYPE, Response
@@ -23,12 +23,12 @@ from .logging_utils import (
     pretty,
     node_brief,
     clean_model_refs,
-    time_block,
     cfg_snapshot,
     model_snapshot,
     append_sources_block,
 )
 from .router.video_router import wants_definition
+from .instrumentation import AppDiagnostics, ProgressRecorder
 
 log = setup_logger("rag_v2.qe")
 
@@ -57,6 +57,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         # NEW: Entity canonicalizer to fix "Soul" -> "SOL" etc.
         self._entity_canonicalizer = EntityCanonicalizer()
         self._speaker_propagator = SpeakerPropagator()
+        self.startup_profile: Optional[Dict[str, Any]] = None
+        self._last_trace: Dict[str, Any] = {}
+        self._last_progress_summary: Optional[Dict[str, Any]] = None
+        self._active_progress: Optional[ProgressRecorder] = None
+        self._last_abort_details: Optional[Dict[str, Any]] = None
 
     # Required for some LI versions
     def _get_prompt_modules(self):
@@ -133,9 +138,6 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         except Exception:
             # last-resort: return raw as-is
             return raw
-
-    import math
-    import re
 
     def _sigmoid(x: float) -> float:
         try:
@@ -237,6 +239,12 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
         # unconditional cutoff
         if top < CFG.stage1_hard_min:
+            self._last_abort_details = {
+                "stage": "retrieve",
+                "reason": "stage1_hard_min",
+                "top_score": top,
+                "threshold": CFG.stage1_hard_min,
+            }
             log.info("qe[early-abort] q='%s' reason=stage1_hard_min top=%.5f<th=%.5f",
                      q, top, CFG.stage1_hard_min)
             return Response(CFG.abort_message, source_nodes=[])
@@ -250,6 +258,14 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if ents & qents:
                 rel += 1
         if top < CFG.stage1_top_min and rel < CFG.stage1_min_relevant:
+            self._last_abort_details = {
+                "stage": "retrieve",
+                "reason": "stage1_low",
+                "top_score": top,
+                "relevant_hits": rel,
+                "threshold": CFG.stage1_top_min,
+                "min_relevant": CFG.stage1_min_relevant,
+            }
             log.info("qe[early-abort] q='%s' reason=stage1_low top=%.4f rel=%d", q, top, rel)
             return Response(CFG.abort_message, source_nodes=[])
         return None
@@ -260,124 +276,273 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             return None
         mx = max(ce_norm) if ce_norm else 0.0
         if mx < CFG.ce_max_norm_min:
+            self._last_abort_details = {
+                "stage": "rerank_cross_encoder",
+                "reason": "ce_low",
+                "max_norm": mx,
+                "threshold": CFG.ce_max_norm_min,
+            }
             log.info("qe[early-abort] reason=ce_low max_norm=%.4f", mx)
             return Response(CFG.abort_message, source_nodes=[])
         return None
 
     # -------- sync path --------
+    def query(self, query: Any, progress: Optional[ProgressRecorder] = None, **kwargs) -> RESPONSE_TYPE:
+        """
+        Override to accept an optional ProgressRecorder.
+        """
+        recorder = progress or ProgressRecorder(scope="rag_query")
+        prev = self._active_progress
+        self._active_progress = recorder
+        try:
+            return super().query(query, **kwargs)
+        finally:
+            self._active_progress = prev
+
+    def get_last_trace(self) -> Dict[str, Any]:
+        return dict(self._last_trace)
+
+    def get_last_progress_summary(self) -> Optional[Dict[str, Any]]:
+        return dict(self._last_progress_summary) if self._last_progress_summary else None
+
+    def _finalize_trace(self, trace: Dict[str, Any], progress: ProgressRecorder) -> Dict[str, Any]:
+        summary = progress.summary()
+        trace["request_id"] = summary["request_id"]
+        trace["total_ms"] = summary["total_ms"]
+        trace["timings"] = summary["timings"]
+        trace["progress"] = summary["progress"]
+        trace["progress_metadata"] = summary["metadata"]
+        self._last_trace = trace
+        self._last_progress_summary = summary
+        AppDiagnostics.record_query(trace)
+        return summary
+
     def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
         q = query_bundle.query_str
+        progress = self._active_progress or ProgressRecorder(scope="rag_query")
+        progress.metadata.setdefault("query", q)
+
         trace: Dict[str, Any] = {
             "query": q,
             "config": cfg_snapshot(CFG),
             "models": model_snapshot(),
         }
+        trace["request_id"] = progress.request_id
 
-        t_total = time_block()
+        self._last_abort_details = None
+        nodes: List[NodeWithScore] = []
+        final_nodes: List[NodeWithScore] = []
+        early: Optional[Response] = None
 
-        # 1) Retrieve (+ retriever snapshot)
-        t_retrieve = time_block()
         with self.callback_manager.event(CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: q}) as revent:
-            nodes: List[NodeWithScore] = self._retriever.retrieve(query_bundle)
+            with progress.step("retrieve", "Fetching candidate documents") as retrieve_step:
+                nodes = self._retriever.retrieve(query_bundle)
+                retrieve_step.metadata.update({
+                    "initial_candidates": len(nodes),
+                    "similarity_top_k": getattr(
+                        getattr(self._retriever, "base", None),
+                        "similarity_top_k",
+                        None,
+                    ),
+                })
+                if nodes:
+                    scores = [float(n.score or 0.0) for n in nodes]
+                    retrieve_step.metadata["score_min"] = min(scores)
+                    retrieve_step.metadata["score_max"] = max(scores)
 
-            early = self._maybe_early_abort_stage1(q, nodes)
-            if early:
-                return early
+            trace["stage1_count"] = len(nodes)
 
             if hasattr(self._retriever, "debug_snapshot"):
                 trace.update(self._retriever.debug_snapshot())
 
-            # 2) Optional CE rerank (entity/metadata-aware)
-            if self._ce and self._ce.enabled and nodes:
-                packs = self._ce_pack(nodes)
-                trace["pre_ce"] = [{"segment_id": sid, "score_stage1": sc} for (sid, _t, sc) in packs]
-
-                metas: Dict[str, Dict[str, Any]] = {}
-                for n in nodes:
-                    md = n.node.metadata or {}
-                    sid = md.get("segment_id") or md.get("id") or n.node.node_id
-                    metas[sid] = {
-                        "entities": md.get("entities") or [],
-                        "canonical_entities": md.get("canonical_entities") or [],
-                        "node_type": md.get("node_type") or md.get("document_type"),
-                        "router_boost": md.get("router_boost"),
-                        "is_explainer": md.get("is_explainer"),
-                    }
-
-                t_ce = time_block()
-                rescored = self._ce.rerank_with_meta(q, packs, metas)
-                trace["ce_ms"] = t_ce()
-                trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
-                nodes = self._reinject_scores(nodes, rescored)
-
-                # normalize CE -> [0,1] + percentile/absolute keep
-                sig = type(self)._sigmoid
-                pct = type(self)._percentile_cut
-                ce_norm = [sig(float(n.score or 0.0)) for n in nodes]
-
-                early = self._maybe_early_abort_post_ce(ce_norm)
-                if early:
-                    return early
-
-                pcut = pct(ce_norm, CFG.ce_keep_percentile)
-                kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= CFG.ce_abs_min)]
-                if not kept:
-                    kept = nodes[: CFG.ce_min_keep]
-                elif len(kept) < CFG.ce_min_keep:
-                    extra = [n for n in nodes if n not in kept][: (CFG.ce_min_keep - len(kept))]
-                    kept.extend(extra)
-                nodes = kept
-
-                trace["ce_keep_policy"] = {
-                    "percentile": CFG.ce_keep_percentile,
-                    "abs_min": CFG.ce_abs_min,
-                    "min_keep": CFG.ce_min_keep,
-                    "pcut": pcut,
-                    "kept_after_ce": len(nodes),
-                }
+            early = self._maybe_early_abort_stage1(q, nodes)
+            if early:
+                if self._last_abort_details:
+                    trace["early_abort"] = self._last_abort_details
+                progress.add_event(
+                    "rerank_cross_encoder",
+                    status="skipped",
+                    label="Reranking candidates",
+                    metadata={"reason": "stage1_abort"},
+                )
+                final_nodes = []
             else:
-                trace["ce_skipped"] = True
+                if self._ce and self._ce.enabled and nodes:
+                    with progress.step("rerank_cross_encoder", "Reranking candidates") as ce_step:
+                        ce_step.metadata.update({
+                            "model": getattr(self._ce, "model_name", "unknown"),
+                            "batch_size": getattr(self._ce, "batch_size", None),
+                        })
+                        packs = self._ce_pack(nodes)
+                        trace["pre_ce"] = [{"segment_id": sid, "score_stage1": sc} for (sid, _t, sc) in packs]
 
-            # 3) Clip width before stitching
-            nodes = nodes[: CFG.topk_post_rerank]
+                        metas: Dict[str, Dict[str, Any]] = {}
+                        for n in nodes:
+                            md = n.node.metadata or {}
+                            sid = md.get("segment_id") or md.get("id") or n.node.node_id
+                            metas[sid] = {
+                                "entities": md.get("entities") or [],
+                                "canonical_entities": md.get("canonical_entities") or [],
+                                "node_type": md.get("node_type") or md.get("document_type"),
+                                "router_boost": md.get("router_boost"),
+                                "is_explainer": md.get("is_explainer"),
+                            }
 
-            # 4) Postprocess
-            nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
-            nodes = self._speaker_propagator._postprocess_nodes(nodes)  # propagate speaker metadata
+                        rescored = self._ce.rerank_with_meta(q, packs, metas)
+                        trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
+                        nodes = self._reinject_scores(nodes, rescored)
 
-            # 5) Stitch adjacent clips
-            nodes = self._stitch_adjacent(nodes)
+                        ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
+                        early = self._maybe_early_abort_post_ce(ce_norm)
+                        if early:
+                            ce_step.metadata["abort"] = self._last_abort_details
+                            if self._last_abort_details:
+                                trace["early_abort"] = self._last_abort_details
+                        else:
+                            pcut = self._percentile_cut(ce_norm, CFG.ce_keep_percentile)
+                            kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= CFG.ce_abs_min)]
+                            if not kept:
+                                kept = nodes[: CFG.ce_min_keep]
+                            elif len(kept) < CFG.ce_min_keep:
+                                extra = [n for n in nodes if n not in kept][: (CFG.ce_min_keep - len(kept))]
+                                kept.extend(extra)
+                            nodes = kept
 
-            # 6) Adaptive cap, then annotate speakers on the FINAL set
-            nodes = nodes[: self._final_k(q)]
-            nodes = self._annotate_speakers(nodes)
+                            trace["ce_keep_policy"] = {
+                                "percentile": CFG.ce_keep_percentile,
+                                "abs_min": CFG.ce_abs_min,
+                                "min_keep": CFG.ce_min_keep,
+                                "pcut": pcut,
+                                "kept_after_ce": len(nodes),
+                            }
+                            ce_step.metadata.update({
+                                "kept_after_ce": len(nodes),
+                                "pcut": pcut,
+                            })
+                        trace["ce_ms"] = ce_step.duration_ms
+                else:
+                    progress.add_event(
+                        "rerank_cross_encoder",
+                        status="skipped",
+                        label="Reranking candidates",
+                        metadata={"enabled": bool(self._ce and self._ce.enabled), "reason": "no_candidates" if not nodes else "disabled"},
+                    )
+                    trace["ce_skipped"] = True
 
-            revent.on_end(payload={EventPayload.NODES: nodes})
-        trace["retrieve_ms"] = t_retrieve()
+                if not early:
+                    nodes = nodes[: CFG.topk_post_rerank]
 
-        # Final kept (for sources list)
+                    with progress.step("review_docs", "Reviewing and enriching context") as review_step:
+                        review_step.metadata["input_count"] = len(nodes)
+                        nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+                        nodes = self._speaker_propagator._postprocess_nodes(nodes)
+                        review_step.metadata["output_count"] = len(nodes)
+
+                    with progress.step("stitch", "Stitch adjacent segments") as stitch_step:
+                        stitch_step.metadata["input_count"] = len(nodes)
+                        nodes = self._stitch_adjacent(nodes)
+                        nodes = nodes[: self._final_k(q)]
+                        nodes = self._annotate_speakers(nodes)
+                        stitch_step.metadata["output_count"] = len(nodes)
+
+                    final_nodes = nodes
+                else:
+                    final_nodes = []
+
+            revent.on_end(payload={EventPayload.NODES: final_nodes})
+
+        nodes = final_nodes
+        progress.metadata["final_node_count"] = len(nodes)
+
+        # capture durations recorded so far
+        retrieve_step_duration = progress.timings().get("retrieve")
+        if retrieve_step_duration is not None:
+            trace["retrieve_ms"] = retrieve_step_duration
+
+        if early:
+            progress.add_event(
+                "review_docs",
+                status="skipped",
+                label="Reviewing and enriching context",
+                metadata={"reason": "early_abort"},
+            )
+            progress.add_event(
+                "stitch",
+                status="skipped",
+                label="Stitch adjacent segments",
+                metadata={"reason": "early_abort"},
+            )
+            progress.add_event(
+                "synthesize",
+                status="skipped",
+                label="Composing answer",
+                metadata={"reason": "early_abort"},
+            )
+            progress.add_event(
+                "validate_answer",
+                status="not_implemented",
+                label="Validating answer",
+            )
+            trace["final_kept"] = []
+            trace["final_text"] = str(early)
+            summary = self._finalize_trace(trace, progress)
+            log.debug(pretty(trace))
+            log.info(
+                "qe[early-abort] [%s] q='%s' reason=%s total=%.2f ms",
+                summary["request_id"],
+                q,
+                (self._last_abort_details or {}).get("reason"),
+                summary["total_ms"],
+            )
+            return early
+
         trace["final_kept"] = self._final_sources_view(nodes)
 
-        # No results fast-path
         if not nodes:
+            progress.add_event(
+                "synthesize",
+                status="skipped",
+                label="Composing answer",
+                metadata={"reason": "no_results"},
+            )
+            progress.add_event(
+                "validate_answer",
+                status="not_implemented",
+                label="Validating answer",
+            )
             trace["final_text"] = "No results found."
-            trace["total_ms"] = t_total()
+            summary = self._finalize_trace(trace, progress)
             log.debug(pretty(trace))
-            log.info("qe[done] query='%s' -> no results (%.2f ms)", q, trace["total_ms"])
+            log.info(
+                "qe[done] [%s] query='%s' -> no results (%.2f ms)",
+                summary["request_id"],
+                q,
+                summary["total_ms"],
+            )
             return Response("No results found.", source_nodes=[])
 
-        # 7) Synthesize + clean (includes final entity normalization)
-        t_synth = time_block()
-        resp = self._synthesize_clean(query_bundle, nodes)
-        trace["synthesize_ms"] = t_synth()
-        trace["final_text"] = str(resp)
+        with progress.step("synthesize", "Composing answer") as synth_step:
+            resp = self._synthesize_clean(query_bundle, nodes)
+            synth_step.metadata["llm_model"] = trace["models"].get("llm_model")
+            synth_step.metadata["tokens_estimate"] = self._rough_token_count(str(resp))
+        trace["synthesize_ms"] = synth_step.duration_ms
 
-        # 8) Total timing + emit logs
-        trace["total_ms"] = t_total()
+        progress.add_event(
+            "validate_answer",
+            status="not_implemented",
+            label="Validating answer",
+        )
+
+        trace["final_text"] = str(resp)
+        summary = self._finalize_trace(trace, progress)
         log.debug(pretty(trace))
         log.info(
-            "qe[summary] q='%s' kept=%d synth=%.2f ms total=%.2f ms",
-            q, len(nodes), trace["synthesize_ms"], trace["total_ms"],
+            "qe[summary] [%s] q='%s' kept=%d synth=%.2f ms total=%.2f ms",
+            summary["request_id"],
+            q,
+            len(nodes),
+            trace["synthesize_ms"],
+            summary["total_ms"],
         )
         return resp
 

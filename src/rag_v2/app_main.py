@@ -26,6 +26,7 @@ try:
 except Exception:
     from Llama_index_sandbox.index import load_index_from_disk  # type: ignore
 
+from .instrumentation import AppDiagnostics, ProgressRecorder
 
 def _configure_models() -> None:
     """
@@ -41,58 +42,79 @@ def _configure_models() -> None:
     Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
 
 
-def bootstrap_query_engine_v2(similarity_top_k: int = 50):
+def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressRecorder | None = None):
     """
     Bootstraps the Parent/Child query engine with your Pinecone-backed index.
     Works regardless of how this file is executed.
     """
-    _configure_models()
+    profiler = profiler or ProgressRecorder(scope="startup")
+
+    with profiler.step("configure_models", "Configure LLM + embeddings"):
+        _configure_models()
 
     # Load index (will inherit Settings.embed_model for query embeddings)
-    index = load_index_from_disk()
+    with profiler.step("load_index", "Load vector index from disk") as step:
+        index = load_index_from_disk()
+        step.metadata["similarity_top_k"] = similarity_top_k
 
-    try:
-        from llama_index.vector_stores.pinecone import PineconeVectorStore
+    with profiler.step("vector_store_prepare", "Align Pinecone namespace") as step:
+        try:
+            from llama_index.vector_stores.pinecone import PineconeVectorStore
 
-        vs = getattr(index, "_vector_store", None)
-        if isinstance(vs, PineconeVectorStore):
-            # Try multiple spots – LI/Pinecone versions differ
-            idx_obj = getattr(vs, "_index", None) or getattr(vs, "index", None)
-            idx_name = (
-                    getattr(vs, "_index_name", None)
-                    or getattr(vs, "index_name", None)
-                    or getattr(idx_obj, "name", None)
-                    or getattr(idx_obj, "_name", None)
-                    or os.getenv("PINECONE_INDEX_NAME")  # last resort: env
-            )
+            vs = getattr(index, "_vector_store", None)
+            if isinstance(vs, PineconeVectorStore):
+                # Try multiple spots – LI/Pinecone versions differ
+                idx_obj = getattr(vs, "_index", None) or getattr(vs, "index", None)
+                idx_name = (
+                        getattr(vs, "_index_name", None)
+                        or getattr(vs, "index_name", None)
+                        or getattr(idx_obj, "name", None)
+                        or getattr(idx_obj, "_name", None)
+                        or os.getenv("PINECONE_INDEX_NAME")  # last resort: env
+                )
 
-            ns_current = getattr(vs, "_namespace", None) or os.getenv("PINECONE_NAMESPACE", "videos")
-            print(f"[pinecone] reader index={idx_name} namespace={ns_current!r}")
+                ns_current = getattr(vs, "_namespace", None) or os.getenv("PINECONE_NAMESPACE", "videos")
+                print(f"[pinecone] reader index={idx_name} namespace={ns_current!r}")
 
-            target_ns = os.getenv("PINECONE_NAMESPACE", "videos")
-            if ns_current != target_ns:
-                setattr(vs, "_namespace", target_ns)
-                ns_current = target_ns
-                print(f"[pinecone] forced namespace to {ns_current!r}")
+                target_ns = os.getenv("PINECONE_NAMESPACE", "videos")
+                if ns_current != target_ns:
+                    setattr(vs, "_namespace", target_ns)
+                    ns_current = target_ns
+                    print(f"[pinecone] forced namespace to {ns_current!r}")
 
-            # <<< CRITICAL: export both so parent_resolver uses the SAME index/ns >>>
-            if idx_name:
-                os.environ["PINECONE_INDEX_NAME"] = idx_name
-            os.environ["PINECONE_NAMESPACE"] = ns_current
-        else:
-            print("[pinecone] Not a PineconeVectorStore; parent enrichment will be skipped.")
-    except Exception as e:
-        print(f"[pinecone] namespace check skipped: {e}")
+                # <<< CRITICAL: export both so parent_resolver uses the SAME index/ns >>>
+                if idx_name:
+                    os.environ["PINECONE_INDEX_NAME"] = idx_name
+                os.environ["PINECONE_NAMESPACE"] = ns_current
+
+                step.metadata.update({
+                    "index_name": idx_name,
+                    "namespace": ns_current,
+                })
+            else:
+                step.metadata["warning"] = "Not a PineconeVectorStore; parent enrichment will be skipped."
+        except Exception as e:
+            step.metadata["error"] = str(e)
+            print(f"[pinecone] namespace check skipped: {e}")
 
     # Build base retriever, then wrap with ParentChildRetrieverV2
-    base_retriever = index.as_retriever(similarity_top_k=similarity_top_k, verbose=False)
-    pc_retriever = ParentChildRetrieverV2(base_retriever)
+    with profiler.step("build_retriever", "Construct retriever stack") as step:
+        base_retriever = index.as_retriever(similarity_top_k=similarity_top_k, verbose=False)
+        pc_retriever = ParentChildRetrieverV2(base_retriever)
+        step.metadata["stage1_top_k"] = similarity_top_k
 
     # Pass through callback_manager when present
-    qe = ParentChildQueryEngineV2(
-        retriever=pc_retriever,
-        callback_manager=getattr(index, "callback_manager", None),
-    )
+    with profiler.step("build_query_engine", "Initialize query engine") as step:
+        qe = ParentChildQueryEngineV2(
+            retriever=pc_retriever,
+            callback_manager=getattr(index, "callback_manager", None),
+        )
+        step.metadata["ce_enabled"] = bool(getattr(qe, "_ce", None))
+
+    profiler.metadata["similarity_top_k"] = similarity_top_k
+    startup_profile = profiler.summary()
+    qe.startup_profile = startup_profile
+    AppDiagnostics.record_startup(startup_profile)
     return qe
 
 

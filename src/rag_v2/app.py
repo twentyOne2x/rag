@@ -1,13 +1,12 @@
 # app.py
 import os, asyncio
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from llama_index.core import Settings
-from llama_index.llms.openai import OpenAI
-from rag_v2.app_main import bootstrap_query_engine_v2  # your code
-from rag_v2.logging_utils import clean_model_refs
+from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
+from src.rag_v2.logging_utils import clean_model_refs
+from src.rag_v2.instrumentation import AppDiagnostics, ProgressRecorder
 
 # Allow multiple origins: "https://www.mev.fyi,https://icm.fyi,http://localhost:3000"
 APP_ORIGINS = [o.strip() for o in os.getenv("APP_ORIGINS", os.getenv("APP_ORIGIN", "http://localhost:3000")).split(",") if o.strip()]
@@ -25,8 +24,8 @@ qe = None  # lazily initialized once per container
 @app.on_event("startup")
 async def _startup():
     global qe
-    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", "gpt-4o-mini"))
-    qe = bootstrap_query_engine_v2()  # builds retriever + query engine once
+    profiler = ProgressRecorder(scope="startup")
+    qe = bootstrap_query_engine_v2(profiler=profiler)  # builds retriever + query engine once
 
 # ── Request/Response models ───────────────────────────────────────────────────
 
@@ -45,15 +44,24 @@ class ChatResp(BaseModel):
     response: str
     # Optional legacy fallback field the frontend can parse if present
     formatted_metadata: Optional[str] = None
+    request_id: Optional[str] = None
+    diagnostics: Optional[Dict[str, Any]] = None
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    startup = AppDiagnostics.get_startup_profile() or {}
+    summary = {
+        "total_ms": startup.get("total_ms"),
+        "request_id": startup.get("request_id"),
+    }
+    return {"ok": True, "startup": summary}
 
 @app.post("/chat", response_model=ChatResp)
 async def chat(req: ChatReq):
     if not req.message:
         raise HTTPException(400, "message is required")
+    if qe is None:
+        raise HTTPException(503, "query engine not initialized")
 
     # Normalize history
     history = req.chat_history if req.chat_history is not None else req.history
@@ -78,15 +86,34 @@ async def chat(req: ChatReq):
             # Also embed inline markdown links in the body:
             #   [<title>](https://youtube.com/watch?v=...&t=123s)
             #
-            resp_obj = qe.query(req.message, **{k: v for k, v in qe_kwargs.items() if v is not None})
+            progress = ProgressRecorder(scope="rag_query")
+            resp_obj = qe.query(req.message, progress=progress, **{k: v for k, v in qe_kwargs.items() if v is not None})
             text = clean_model_refs(str(resp_obj))
-            # If you later compute a pre-built metadata blob, attach here:
-            # meta = getattr(resp_obj, "formatted_metadata", None)
-            meta = None
-            return text, meta
+            # Pull any pre-built metadata blob if the QE returns it.
+            meta = getattr(resp_obj, "formatted_metadata", None)
+            trace = qe.get_last_trace()
+            return text, meta, trace
 
-        answer_text, formatted_metadata = loop.run_in_executor(None, _run)
-        answer_text, formatted_metadata = await answer_text, await formatted_metadata  # unpack futures
-        return ChatResp(response=answer_text, formatted_metadata=formatted_metadata)
+        fut = loop.run_in_executor(None, _run)
+        answer_text, formatted_metadata, trace = await fut
+        trace = trace or {}
+        diagnostics_payload = {
+            "request_id": trace.get("request_id"),
+            "total_ms": trace.get("total_ms"),
+            "timings": trace.get("timings"),
+            "progress": trace.get("progress"),
+            "progress_metadata": trace.get("progress_metadata"),
+            "models": trace.get("models"),
+            "final_kept": trace.get("final_kept"),
+            "config": trace.get("config"),
+            "early_abort": trace.get("early_abort"),
+        }
+        diagnostics_payload = {k: v for k, v in diagnostics_payload.items() if v is not None}
+        return ChatResp(
+            response=answer_text,
+            formatted_metadata=formatted_metadata,
+            request_id=trace.get("request_id"),
+            diagnostics=diagnostics_payload or None,
+        )
     except Exception as e:
         raise HTTPException(500, str(e))
