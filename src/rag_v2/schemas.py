@@ -11,6 +11,7 @@ class ParentNode(BaseModel):
     title: str
     description: Optional[str] = None
     channel_name: Optional[str] = None
+    channel_id: Optional[str] = None
     speaker_primary: Optional[str] = None
     published_at: Optional[str] = Field(default=None, description="YYYY-MM-DD")
     start_ts: Optional[str] = None
@@ -41,6 +42,8 @@ class ChildNode(BaseModel):
     end_hms: str
     clip_url: Optional[HttpUrl] = None
     speaker: Optional[str] = None
+    channel_name: Optional[str] = None
+    channel_id: Optional[str] = None
     entities: List[str] = []
     chapter: Optional[str] = None
     language: Optional[str] = "en"

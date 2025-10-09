@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import re
 
 from ..config import CFG
@@ -19,6 +19,7 @@ class ParentChildRetrieverV2:
     def __init__(self, base_retriever):
         self.base = base_retriever
         self._last_debug: Dict[str, Any] = {}
+        self._channel_filter: Optional[Dict[str, List[str]]] = None
 
     def debug_snapshot(self) -> Dict[str, Any]:
         return dict(self._last_debug) if self._last_debug else {}
@@ -54,6 +55,97 @@ class ParentChildRetrieverV2:
             else:
                 all_forms.update({e, e.lower(), e.title()})
         return all_forms, {x.lower() for x in all_forms if not x.startswith("$")}
+
+    def set_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> None:
+        if not channel_filter:
+            self._channel_filter = None
+            return
+        copied: Dict[str, List[str]] = {}
+        for key, values in channel_filter.items():
+            if not values:
+                continue
+            copied[key] = list(values)
+        self._channel_filter = copied or None
+
+    @staticmethod
+    def _dedupe_clean(values: Optional[List[str]]) -> List[str]:
+        if not values:
+            return []
+        seen = set()
+        out: List[str] = []
+        for v in values:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def _build_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        debug = {
+            "requested": channel_filter,
+            "expr": None,
+            "applied": False,
+        }
+        if not channel_filter:
+            return None, debug
+
+        include_clauses: List[Dict[str, Any]] = []
+        exclude_clauses: List[Dict[str, Any]] = []
+
+        inc_ids = self._dedupe_clean(channel_filter.get("include_ids"))
+        inc_names = self._dedupe_clean(channel_filter.get("include_names"))
+        exc_ids = self._dedupe_clean(channel_filter.get("exclude_ids"))
+        exc_names = self._dedupe_clean(channel_filter.get("exclude_names"))
+
+        if inc_ids:
+            include_clauses.append({"channel_id": {"$in": inc_ids}})
+        if inc_names:
+            include_clauses.append({"channel_name": {"$in": inc_names}})
+
+        if exc_ids:
+            exclude_clauses.append({"channel_id": {"$nin": exc_ids}})
+        if exc_names:
+            exclude_clauses.append({"channel_name": {"$nin": exc_names}})
+
+        clauses: List[Dict[str, Any]] = []
+        if include_clauses:
+            clauses.append({"$or": include_clauses} if len(include_clauses) > 1 else include_clauses[0])
+        clauses.extend(exclude_clauses)
+
+        if not clauses:
+            return None, debug
+
+        if len(clauses) == 1:
+            expr = clauses[0]
+        else:
+            expr = {"$and": clauses}
+
+        debug["expr"] = expr
+        debug["applied"] = True
+        return expr, debug
+
+    @staticmethod
+    def _merge_filters(filters: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+        conds = [f for f in filters if f]
+        if not conds:
+            return None
+        if len(conds) == 1:
+            return conds[0]
+        return {"$and": conds}
+
+    def _base_retrieve_with_filter(self, query_bundle, filter_expr: Optional[Dict[str, Any]]):
+        if not filter_expr:
+            return self.base.retrieve(query_bundle)
+        try:
+            return self.base.retrieve(query_bundle, metadata_filter=filter_expr)
+        except TypeError:
+            try:
+                return self.base.retrieve(query_bundle, filters=filter_expr)
+            except Exception:
+                return self.base.retrieve(query_bundle)
 
     def _expand_neighbors(self, nodes, per_parent_cap=3):
         by_parent: Dict[str, List[Any]] = {}
@@ -115,7 +207,7 @@ class ParentChildRetrieverV2:
             )
         return nodes, boosted_list
 
-    def _entity_filtered_retrieve(self, query_bundle, qents_all: set):
+    def _entity_filtered_retrieve(self, query_bundle, qents_all: set, extra_filter: Optional[Dict[str, Any]]):
         """Second pass with metadata filter; falls back silently if base doesn't support it."""
         if not qents_all:
             return [], {"used": False, "filter": {}, "count": 0}
@@ -129,14 +221,21 @@ class ParentChildRetrieverV2:
         }
 
         nodes2 = []
+        merged_filter = self._merge_filters([filt, extra_filter])
         try:
-            nodes2 = self.base.retrieve(query_bundle, metadata_filter=filt)
+            if merged_filter:
+                nodes2 = self.base.retrieve(query_bundle, metadata_filter=merged_filter)
+            else:
+                nodes2 = self.base.retrieve(query_bundle, metadata_filter=filt)
         except TypeError:
             try:
-                nodes2 = self.base.retrieve(query_bundle, filters=filt)
+                if merged_filter:
+                    nodes2 = self.base.retrieve(query_bundle, filters=merged_filter)
+                else:
+                    nodes2 = self.base.retrieve(query_bundle, filters=filt)
             except Exception:
                 nodes2 = []
-        return nodes2, {"used": bool(nodes2), "filter": filt, "count": len(nodes2)}
+        return nodes2, {"used": bool(nodes2), "filter": merged_filter or filt, "count": len(nodes2)}
 
     def _merge_and_boost_filtered(self, nodes_a, nodes_b, boost: float):
         """Merge two node lists by id; multiply scores of list B by boost."""
@@ -156,9 +255,15 @@ class ParentChildRetrieverV2:
         q = query_bundle.query_str
         qents_all, qents_lc = self._query_entities(q)
 
-        # Stage 1: vanilla vector retrieve
-        nodes = self.base.retrieve(query_bundle)
+        channel_filter_expr, channel_filter_dbg = self._build_channel_filter(self._channel_filter)
+        # channel filter is single-use per request; clear after capturing
+        self._channel_filter = None
+
+        # Stage 1: vanilla vector retrieve (with optional channel filter)
+        nodes = self._base_retrieve_with_filter(query_bundle, channel_filter_expr)
         stage1 = [node_brief(n) for n in nodes]
+        channel_filter_dbg["stage1_applied"] = bool(channel_filter_expr)
+        channel_filter_dbg["stage1_candidates"] = len(nodes)
         if nodes:
             s = [float(n.score or 0.0) for n in nodes]
             stage1_scores = {"count": len(nodes), "min": min(s), "max": max(s)}
@@ -170,7 +275,10 @@ class ParentChildRetrieverV2:
             stage1_scores, by_dtype = {"count": 0, "min": 0.0, "max": 0.0}, {}
 
         # Stage 1b: entity-filtered retrieve (optional) + merge
-        filt_nodes, filt_dbg = self._entity_filtered_retrieve(query_bundle, qents_all)
+        filt_nodes, filt_dbg = self._entity_filtered_retrieve(query_bundle, qents_all, channel_filter_expr)
+        channel_filter_dbg["stage1b_candidates"] = len(filt_nodes)
+        channel_filter_dbg["stage1b_filter"] = filt_dbg.get("filter")
+
         merged = self._merge_and_boost_filtered(
             nodes,
             filt_nodes,
@@ -207,12 +315,15 @@ class ParentChildRetrieverV2:
                     if pm:
                         md.setdefault("parent_title", _clean_title(pm.get("parent_title")))
                         md.setdefault("parent_channel_name", pm.get("parent_channel_name"))
+                        md.setdefault("parent_channel_id", pm.get("parent_channel_id"))
                         md.setdefault("parent_published_at", pm.get("parent_published_at"))
                         md.setdefault("parent_url", pm.get("parent_url"))
                         if not md.get("title") and pm.get("parent_title"):
                             md["title"] = _clean_title(pm["parent_title"])
                         if not md.get("channel_name") and pm.get("parent_channel_name"):
                             md["channel_name"] = pm["parent_channel_name"]
+                        if not md.get("channel_id") and pm.get("parent_channel_id"):
+                            md["channel_id"] = pm["parent_channel_id"]
                         if not md.get("published_at") and pm.get("parent_published_at"):
                             md["published_at"] = pm["parent_published_at"]
                         if not md.get("url") and pm.get("parent_url"):
@@ -257,6 +368,7 @@ class ParentChildRetrieverV2:
         # Pre-CE shortlist
         neighbors_sorted = sorted(neighbors, key=lambda n: (n.score or 0.0), reverse=True)
         neighbors_topn = neighbors_sorted[: CFG.stage1_topn]
+        channel_filter_dbg["final_candidates"] = len(neighbors_topn)
 
         # Debug snapshot
         self._last_debug = {
@@ -266,6 +378,7 @@ class ParentChildRetrieverV2:
             "stage1_scores": stage1_scores,
             "stage1_doc_types": by_dtype,
             "entity_filtered": filt_dbg,
+            "channel_filter": channel_filter_dbg,
             "parent_meta": parent_meta_dbg,  # <-- NEW
             "after_metadata_boosts": boost_details,
             "neighbor_expansion": expanded_map,

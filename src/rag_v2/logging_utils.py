@@ -123,6 +123,9 @@ def node_brief(nws) -> Dict[str, Any]:
         "clip_url": md.get("clip_url") or md.get("url"),
         "title": md.get("title"),
         "channel_name": md.get("channel_name"),
+        "channel_id": md.get("channel_id"),
+        "parent_channel_name": md.get("parent_channel_name"),
+        "parent_channel_id": md.get("parent_channel_id"),
         "text_preview": (text[:280] + "…") if text and len(text) > 280 else text,
     }
 
@@ -294,6 +297,7 @@ def format_metadata(response, source_nodes) -> str:
             "title": title,
             "speaker": meta.get("speaker"),
             "channel": channel,
+            "channel_id": meta.get("channel_id") or meta.get("parent_channel_id"),
             "url": link_url or "N/A",
             "date": date,
             "score": float(score) if score is not None else 0.0,
@@ -315,6 +319,7 @@ def format_metadata(response, source_nodes) -> str:
                 head,
                 *( [f"[Speaker]: {r['speaker']}"] if r["speaker"] else [] ),
                 f"[Channel]: {r['channel']}",
+                *( [f"[Channel ID]: {r['channel_id']}"] if r["channel_id"] else [] ),
                 f"[Date]: {r['date']}",
                 f"[Score]: {r['score']:.4f}",
             ]

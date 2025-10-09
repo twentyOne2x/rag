@@ -62,6 +62,28 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         self._last_progress_summary: Optional[Dict[str, Any]] = None
         self._active_progress: Optional[ProgressRecorder] = None
         self._last_abort_details: Optional[Dict[str, Any]] = None
+        self._active_channel_filter: Optional[Dict[str, Any]] = None
+
+    @staticmethod
+    def _normalize_channel_filter(channel_filter: Optional[Dict[str, Any]]) -> Optional[Dict[str, List[str]]]:
+        if not channel_filter:
+            return None
+        allowed_keys = ("include_ids", "exclude_ids", "include_names", "exclude_names")
+        normalized: Dict[str, List[str]] = {}
+        for key in allowed_keys:
+            vals = channel_filter.get(key)
+            if not vals:
+                continue
+            clean_vals = []
+            for v in vals:
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s:
+                    clean_vals.append(s)
+            if clean_vals:
+                normalized[key] = clean_vals
+        return normalized or None
 
     # Required for some LI versions
     def _get_prompt_modules(self):
@@ -98,6 +120,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     "url": md.get("clip_url") or md.get("url"),
                     "title": md.get("title"),
                     "channel_name": md.get("channel_name"),
+                    "channel_id": md.get("channel_id"),
                 }
             )
             out.append(view)
@@ -291,13 +314,38 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         """
         Override to accept an optional ProgressRecorder.
         """
+        channel_filter_raw = kwargs.pop("channel_filter", None)
+        channel_filter = self._normalize_channel_filter(channel_filter_raw)
+
         recorder = progress or ProgressRecorder(scope="rag_query")
         prev = self._active_progress
+        prev_filter = self._active_channel_filter
         self._active_progress = recorder
+        self._active_channel_filter = channel_filter
+
+        if channel_filter and hasattr(self._retriever, "set_channel_filter"):
+            try:
+                self._retriever.set_channel_filter(channel_filter)
+            except Exception:
+                pass
+        elif hasattr(self._retriever, "set_channel_filter"):
+            try:
+                self._retriever.set_channel_filter(None)
+            except Exception:
+                pass
+
+        recorder.metadata["channel_filter"] = channel_filter
+
         try:
             return super().query(query, **kwargs)
         finally:
             self._active_progress = prev
+            self._active_channel_filter = prev_filter
+            if hasattr(self._retriever, "set_channel_filter"):
+                try:
+                    self._retriever.set_channel_filter(prev_filter)
+                except Exception:
+                    pass
 
     def get_last_trace(self) -> Dict[str, Any]:
         return dict(self._last_trace)
@@ -328,6 +376,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             "models": model_snapshot(),
         }
         trace["request_id"] = progress.request_id
+        trace["channel_filter"] = self._active_channel_filter
 
         self._last_abort_details = None
         nodes: List[NodeWithScore] = []
@@ -335,7 +384,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         early: Optional[Response] = None
 
         with self.callback_manager.event(CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: q}) as revent:
-            with progress.step("retrieve", "Fetching candidate documents") as retrieve_step:
+            with progress.step("retrieve", "Finding likely sources (vector retrieval)") as retrieve_step:
                 nodes = self._retriever.retrieve(query_bundle)
                 retrieve_step.metadata.update({
                     "initial_candidates": len(nodes),
@@ -362,13 +411,13 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 progress.add_event(
                     "rerank_cross_encoder",
                     status="skipped",
-                    label="Reranking candidates",
+                    label="Re-scoring sources (cross-encoder rerank)",
                     metadata={"reason": "stage1_abort"},
                 )
                 final_nodes = []
             else:
                 if self._ce and self._ce.enabled and nodes:
-                    with progress.step("rerank_cross_encoder", "Reranking candidates") as ce_step:
+                    with progress.step("rerank_cross_encoder", "Re-scoring sources (cross-encoder rerank)") as ce_step:
                         ce_step.metadata.update({
                             "model": getattr(self._ce, "model_name", "unknown"),
                             "batch_size": getattr(self._ce, "batch_size", None),
@@ -424,7 +473,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     progress.add_event(
                         "rerank_cross_encoder",
                         status="skipped",
-                        label="Reranking candidates",
+                        label="Re-scoring sources (cross-encoder rerank)",
                         metadata={"enabled": bool(self._ce and self._ce.enabled), "reason": "no_candidates" if not nodes else "disabled"},
                     )
                     trace["ce_skipped"] = True
@@ -432,13 +481,13 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 if not early:
                     nodes = nodes[: CFG.topk_post_rerank]
 
-                    with progress.step("review_docs", "Reviewing and enriching context") as review_step:
+                    with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
                         review_step.metadata["input_count"] = len(nodes)
                         nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
                         nodes = self._speaker_propagator._postprocess_nodes(nodes)
                         review_step.metadata["output_count"] = len(nodes)
 
-                    with progress.step("stitch", "Stitch adjacent segments") as stitch_step:
+                    with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
                         stitch_step.metadata["input_count"] = len(nodes)
                         nodes = self._stitch_adjacent(nodes)
                         nodes = nodes[: self._final_k(q)]
@@ -463,25 +512,25 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             progress.add_event(
                 "review_docs",
                 status="skipped",
-                label="Reviewing and enriching context",
+                label="Cleaning and enriching notes (post-processing pipeline)",
                 metadata={"reason": "early_abort"},
             )
             progress.add_event(
                 "stitch",
                 status="skipped",
-                label="Stitch adjacent segments",
+                label="Merging adjacent clips (temporal stitching)",
                 metadata={"reason": "early_abort"},
             )
             progress.add_event(
                 "synthesize",
                 status="skipped",
-                label="Composing answer",
+                label="Writing final answer (LLM synthesis)",
                 metadata={"reason": "early_abort"},
             )
             progress.add_event(
                 "validate_answer",
                 status="not_implemented",
-                label="Validating answer",
+                label="Final validation step (post-answer checks)",
             )
             trace["final_kept"] = []
             trace["final_text"] = str(early)
@@ -502,13 +551,13 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             progress.add_event(
                 "synthesize",
                 status="skipped",
-                label="Composing answer",
+                label="Writing final answer (LLM synthesis)",
                 metadata={"reason": "no_results"},
             )
             progress.add_event(
                 "validate_answer",
                 status="not_implemented",
-                label="Validating answer",
+                label="Final validation step (post-answer checks)",
             )
             trace["final_text"] = "No results found."
             summary = self._finalize_trace(trace, progress)
@@ -521,7 +570,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             )
             return Response("No results found.", source_nodes=[])
 
-        with progress.step("synthesize", "Composing answer") as synth_step:
+        with progress.step("synthesize", "Writing final answer (LLM synthesis)") as synth_step:
             resp = self._synthesize_clean(query_bundle, nodes)
             synth_step.metadata["llm_model"] = trace["models"].get("llm_model")
             synth_step.metadata["tokens_estimate"] = self._rough_token_count(str(resp))
@@ -530,7 +579,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         progress.add_event(
             "validate_answer",
             status="not_implemented",
-            label="Validating answer",
+            label="Final validation step (post-answer checks)",
         )
 
         trace["final_text"] = str(resp)

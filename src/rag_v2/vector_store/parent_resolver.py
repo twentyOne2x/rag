@@ -81,6 +81,7 @@ def fetch_parent_meta(parent_ids: Iterable[str], namespace: str | None = None) -
         mapped = {
             "parent_title": _clean_title(meta.get("title")),
             "parent_channel_name": meta.get("channel_name"),
+            "parent_channel_id": meta.get("channel_id"),
             "parent_published_at": date,
             "parent_published_date": date,
             "parent_url": (str(meta.get("url")) if meta.get("url") is not None else None),

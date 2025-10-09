@@ -29,6 +29,13 @@ async def _startup():
 
 # ── Request/Response models ───────────────────────────────────────────────────
 
+class ChannelFilter(BaseModel):
+    include_ids: Optional[List[str]] = None
+    exclude_ids: Optional[List[str]] = None
+    include_names: Optional[List[str]] = None
+    exclude_names: Optional[List[str]] = None
+
+
 class ChatReq(BaseModel):
     message: str
     # Accept both names; frontend currently sends "chat_history"
@@ -37,6 +44,7 @@ class ChatReq(BaseModel):
     # Router hints (optional)
     scope: Optional[str] = None            # "videos" | "streams" | "auto"
     definition: Optional[bool] = None      # definition/explainer intent
+    channel_filter: Optional[ChannelFilter] = None
     # Future: user/session ids if you want per-user routing/ablation
     # user_id: Optional[str] = None
 
@@ -73,6 +81,13 @@ async def chat(req: ChatReq):
         "definition_mode": req.definition,  # your QE can bias retrieval
         "history": history,                 # if you thread history inside QE
     }
+    channel_filter_payload: Optional[Dict[str, List[str]]] = None
+    if req.channel_filter:
+        channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+    if channel_filter_payload:
+        qe_kwargs["channel_filter"] = channel_filter_payload
 
     try:
         loop = asyncio.get_running_loop()
@@ -87,7 +102,11 @@ async def chat(req: ChatReq):
             #   [<title>](https://youtube.com/watch?v=...&t=123s)
             #
             progress = ProgressRecorder(scope="rag_query")
-            resp_obj = qe.query(req.message, progress=progress, **{k: v for k, v in qe_kwargs.items() if v is not None})
+            resp_obj = qe.query(
+                req.message,
+                progress=progress,
+                **{k: v for k, v in qe_kwargs.items() if v is not None},
+            )
             text = clean_model_refs(str(resp_obj))
             # Pull any pre-built metadata blob if the QE returns it.
             meta = getattr(resp_obj, "formatted_metadata", None)
@@ -107,6 +126,7 @@ async def chat(req: ChatReq):
             "final_kept": trace.get("final_kept"),
             "config": trace.get("config"),
             "early_abort": trace.get("early_abort"),
+            "channel_filter": trace.get("channel_filter"),
         }
         diagnostics_payload = {k: v for k, v in diagnostics_payload.items() if v is not None}
         return ChatResp(
