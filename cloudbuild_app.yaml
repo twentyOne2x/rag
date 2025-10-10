@@ -115,6 +115,9 @@ steps:
 images:
 - gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA
 
+options:
+  logging: CLOUD_LOGGING_ONLY
+
 # Define user substitutions
 substitutions:
   _VM_NAME: rag-build-vm
