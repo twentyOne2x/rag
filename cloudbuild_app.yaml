@@ -5,9 +5,9 @@ steps:
   args:
     - build
     - -t
-    - gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA
+    - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA
     - -t
-    - gcr.io/just-skyline-474622-e1/rag:latest
+    - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:latest
     - -f
     - ./Dockerfile_app
     - .
@@ -16,11 +16,11 @@ steps:
 - name: gcr.io/cloud-builders/docker
   args:
     - push
-    - gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA
+    - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA
 - name: gcr.io/cloud-builders/docker
   args:
     - push
-    - gcr.io/just-skyline-474622-e1/rag:latest
+    - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:latest
 
 # 3. SSH‑deploy on the VM, secrets injected via secretEnv
 - name: gcr.io/cloud-builders/gcloud
@@ -64,7 +64,7 @@ steps:
           --zone=${_VM_ZONE} \
           --project=just-skyline-474622-e1 -- \
           <<EOF
-          sudo docker pull gcr.io/just-skyline-474622-e1/rag:${SHORT_SHA}
+          sudo docker pull us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:${SHORT_SHA}
           
           # stop/remove old container if present
           if sudo docker ps -a --format '{{.Names}}' | grep -qw api; then
@@ -106,14 +106,14 @@ steps:
             -e VOICE_AUTO_ENROLL=${_VOICE_AUTO_ENROLL} \
             -e VOICE_ENROLL_MIN_TALK_S=${_VOICE_ENROLL_MIN_TALK_S} \
             -e VOICE_AUTO_ENROLL_NAME=${_VOICE_AUTO_ENROLL_NAME} \
-            gcr.io/just-skyline-474622-e1/rag:${SHORT_SHA}
+            us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:${SHORT_SHA}
           EOF
 
 
 
 # List an image so Cloud Build shows a link
 images:
-- gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA
+- us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA
 
 options:
   logging: CLOUD_LOGGING_ONLY

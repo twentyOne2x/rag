@@ -7,7 +7,7 @@ steps:
       - 'deploy'
       - 'rag-service'
       - '--image'
-      - 'gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA'
+      - 'us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA'
       - '--region'
       - 'us-east1'
       - '--allow-unauthenticated'

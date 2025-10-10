@@ -34,7 +34,8 @@ BRANCH_PATTERN="main"
 TRIGGER_BUILD_NAME="rag-build"
 TRIGGER_DEPLOY_NAME="rag-deploy"
 GITHUB_CONNECTION=""
-IMAGE_REPO="gcr.io"
+IMAGE_REGISTRY="us-east1-docker.pkg.dev"
+IMAGE_REPOSITORY="rag"
 IMAGE_NAME="rag"
 BUILD_CONFIG="cloudbuild_app.yaml"
 DEPLOY_CONFIG="cloudbuild_deploy_app.yaml"
@@ -89,7 +90,8 @@ Options:
   --repo_name <name>        GitHub repository name (required for triggers)
   --branch <pattern>        Branch regex for triggers (default: ${BRANCH_PATTERN})
   --github_connection <id>  gcloud GitHub connection ID (run 'gcloud builds connections list')
-  --image_repo <host>       Container registry host (default: ${IMAGE_REPO})
+  --image_repo <host>       Container registry host (default: ${IMAGE_REGISTRY})
+  --image_repository <name> Artifact Registry repository (default: ${IMAGE_REPOSITORY})
   --image_name <name>       Container image name (default: ${IMAGE_NAME})
   --build_trigger_name <n>  Cloud Build trigger name for builds (default: ${TRIGGER_BUILD_NAME})
   --deploy_trigger_name <n> Cloud Build trigger name for deploy (default: ${TRIGGER_DEPLOY_NAME})
@@ -110,7 +112,8 @@ while [[ $# -gt 0 ]]; do
     --repo_name) REPO_NAME="$2"; shift 2 ;;
     --branch) BRANCH_PATTERN="$2"; shift 2 ;;
     --github_connection) GITHUB_CONNECTION="$2"; shift 2 ;;
-    --image_repo) IMAGE_REPO="$2"; shift 2 ;;
+    --image_repo) IMAGE_REGISTRY="$2"; shift 2 ;;
+    --image_repository) IMAGE_REPOSITORY="$2"; shift 2 ;;
     --image_name) IMAGE_NAME="$2"; shift 2 ;;
     --build_trigger_name) TRIGGER_BUILD_NAME="$2"; shift 2 ;;
     --deploy_trigger_name) TRIGGER_DEPLOY_NAME="$2"; shift 2 ;;
@@ -124,7 +127,7 @@ if [[ -z "${PROJECT_ID}" ]]; then
   exit 1
 fi
 
-IMAGE_PATH="${IMAGE_REPO}/${PROJECT_ID}/${IMAGE_NAME}"
+IMAGE_PATH="${IMAGE_REGISTRY}/${PROJECT_ID}/${IMAGE_REPOSITORY}/${IMAGE_NAME}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 banner() {
@@ -318,10 +321,10 @@ main() {
   create_secrets
 
   banner "Preparing a container registry home (Artifact Registry docker repo)"
-  gcloud artifacts repositories describe "${IMAGE_NAME}" \
+  gcloud artifacts repositories describe "${IMAGE_REPOSITORY}" \
     --project "${PROJECT_ID}" \
     --location "${REGION}" >/dev/null 2>&1 || \
-    gcloud artifacts repositories create "${IMAGE_NAME}" \
+    gcloud artifacts repositories create "${IMAGE_REPOSITORY}" \
       --repository-format docker \
       --location "${REGION}" \
       --description "Docker repo for ${SERVICE_NAME}" \
