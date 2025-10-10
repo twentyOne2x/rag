@@ -14,8 +14,8 @@ RUN apt-get update && \
     pip install --no-cache-dir -r requirements.txt
 
 # 2· application code --------------------------------------------------
-# .dockerignore excludes datasets/, so copy it explicitly first
-COPY datasets /app/datasets
+# Manually stage required dataset artefacts (the directory is ignored in .dockerignore)
+COPY datasets/evaluation_data /app/datasets/evaluation_data
 COPY . .
 
 RUN echo "=== AFTER COPY ===" && ls -Rla /app
