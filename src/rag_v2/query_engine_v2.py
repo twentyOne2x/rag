@@ -2,7 +2,9 @@
 from __future__ import annotations
 import asyncio
 import math
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from llama_index.core.base.base_query_engine import BaseQueryEngine
@@ -29,6 +31,7 @@ from .logging_utils import (
 )
 from .router.video_router import wants_definition
 from .instrumentation import AppDiagnostics, ProgressRecorder
+from .telemetry import TelemetryCollector, JsonlTelemetryWriter
 
 log = setup_logger("rag_v2.qe")
 
@@ -63,6 +66,8 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         self._active_progress: Optional[ProgressRecorder] = None
         self._last_abort_details: Optional[Dict[str, Any]] = None
         self._active_channel_filter: Optional[Dict[str, Any]] = None
+        self._telemetry_enabled: bool = os.getenv("RAG_ENABLE_TELEMETRY", "1") in ("1", "true", "yes")
+        self._telemetry_writer: Optional[JsonlTelemetryWriter] = self._init_telemetry_writer()
 
     @staticmethod
     def _normalize_channel_filter(channel_filter: Optional[Dict[str, Any]]) -> Optional[Dict[str, List[str]]]:
@@ -84,6 +89,16 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if clean_vals:
                 normalized[key] = clean_vals
         return normalized or None
+
+    def _init_telemetry_writer(self) -> Optional[JsonlTelemetryWriter]:
+        path_str = os.getenv("RAG_TELEMETRY_PATH")
+        if not path_str:
+            return None
+        try:
+            return JsonlTelemetryWriter(Path(path_str))
+        except Exception as exc:
+            log.warning("telemetry[writer] failed to initialise path=%s err=%s", path_str, exc)
+            return None
 
     # Required for some LI versions
     def _get_prompt_modules(self):
@@ -360,9 +375,42 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         trace["timings"] = summary["timings"]
         trace["progress"] = summary["progress"]
         trace["progress_metadata"] = summary["metadata"]
+        telemetry_summary = self._collect_telemetry(summary, trace) if self._telemetry_enabled else None
+        if telemetry_summary:
+            trace["telemetry_summary"] = telemetry_summary
+            AppDiagnostics.record_telemetry(telemetry_summary)
         self._last_trace = trace
         self._last_progress_summary = summary
         AppDiagnostics.record_query(trace)
+        return summary
+
+    def _collect_telemetry(self, progress_summary: Dict[str, Any], trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        events = progress_summary.get("progress", []) or []
+        if not events:
+            return None
+
+        collector = TelemetryCollector(
+            service_name=os.getenv("RAG_SERVICE_NAME", "rag-v2"),
+            environment=os.getenv("RAG_ENV", os.getenv("ENVIRONMENT", "dev")),
+            writer=self._telemetry_writer,
+        )
+
+        for ev in events:
+            metadata = dict(ev.get("metadata") or {})
+            metadata.update({
+                "status": ev.get("status"),
+                "label": ev.get("label"),
+            })
+            duration = ev.get("duration_ms")
+            if duration is None:
+                duration = 0.0
+            collector.record_stage(ev.get("name", "unknown"), float(duration), metadata=metadata)
+
+        summary = collector.summary()
+        summary["request_id"] = progress_summary.get("request_id")
+        summary["query"] = trace.get("query")
+        summary["channel_filter"] = trace.get("channel_filter")
+        summary["total_ms"] = progress_summary.get("total_ms")
         return summary
 
     def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:

@@ -62,7 +62,16 @@ def healthz():
         "total_ms": startup.get("total_ms"),
         "request_id": startup.get("request_id"),
     }
-    return {"ok": True, "startup": summary}
+    telemetry = AppDiagnostics.get_last_telemetry() or {}
+    recent = [
+        {
+            "request_id": trace.get("request_id"),
+            "total_ms": trace.get("total_ms"),
+            "query": trace.get("query"),
+        }
+        for trace in AppDiagnostics.recent_traces()[-5:]
+    ]
+    return {"ok": True, "startup": summary, "telemetry": telemetry, "recent_queries": recent}
 
 @app.post("/chat", response_model=ChatResp)
 async def chat(req: ChatReq):
@@ -127,6 +136,7 @@ async def chat(req: ChatReq):
             "config": trace.get("config"),
             "early_abort": trace.get("early_abort"),
             "channel_filter": trace.get("channel_filter"),
+            "telemetry_summary": trace.get("telemetry_summary"),
         }
         diagnostics_payload = {k: v for k, v in diagnostics_payload.items() if v is not None}
         return ChatResp(

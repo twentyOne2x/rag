@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from .telemetry.cache import DiagnosticsCache
 
 
 def _now_iso() -> str:
@@ -140,6 +143,10 @@ class AppDiagnostics:
 
     startup_profile: Optional[Dict[str, Any]] = None
     last_query_trace: Optional[Dict[str, Any]] = None
+    last_telemetry_summary: Optional[Dict[str, Any]] = None
+    telemetry_cache: DiagnosticsCache = DiagnosticsCache(
+        capacity=int(os.getenv("RAG_TELEMETRY_CACHE_SIZE", "200"))
+    )
 
     @classmethod
     def record_startup(cls, profile: Dict[str, Any]) -> None:
@@ -148,6 +155,7 @@ class AppDiagnostics:
     @classmethod
     def record_query(cls, trace: Dict[str, Any]) -> None:
         cls.last_query_trace = trace
+        cls.telemetry_cache.add(trace)
 
     @classmethod
     def get_startup_profile(cls) -> Optional[Dict[str, Any]]:
@@ -156,3 +164,15 @@ class AppDiagnostics:
     @classmethod
     def get_last_query_trace(cls) -> Optional[Dict[str, Any]]:
         return cls.last_query_trace
+
+    @classmethod
+    def record_telemetry(cls, summary: Dict[str, Any]) -> None:
+        cls.last_telemetry_summary = summary
+
+    @classmethod
+    def get_last_telemetry(cls) -> Optional[Dict[str, Any]]:
+        return cls.last_telemetry_summary
+
+    @classmethod
+    def recent_traces(cls) -> List[Dict[str, Any]]:
+        return cls.telemetry_cache.snapshot()
