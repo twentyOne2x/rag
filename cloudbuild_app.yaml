@@ -17,7 +17,8 @@ steps:
   args:
     - build
     - --cache-from=type=registry,ref=us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:latest
-    - --cache-to=type=inline
+    - --build-arg
+    - BUILDKIT_INLINE_CACHE=1
     - -t
     - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA
     - -t
