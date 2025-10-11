@@ -6,7 +6,7 @@ import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .telemetry.cache import DiagnosticsCache
 
@@ -39,6 +39,7 @@ class _ProgressStep:
         self.event.status = "in_progress"
         self.event.started_at = _now_iso()
         self._start_monotonic = time.perf_counter()
+        self._recorder._notify(self.event)
         return self.event
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -51,10 +52,12 @@ class _ProgressStep:
             self.event.status = "failed"
             self.event.metadata.setdefault("error", str(exc))
             # don't swallow the exception
+            self._recorder._notify(self.event)
             return False
 
         if self.event.status not in ("skipped", "not_implemented"):
             self.event.status = "completed"
+        self._recorder._notify(self.event)
         return False
 
 
@@ -64,7 +67,13 @@ class ProgressRecorder:
     Designed to be thread-confined (one recorder per request).
     """
 
-    def __init__(self, scope: str = "request", request_id: Optional[str] = None, enabled: bool = True):
+    def __init__(
+        self,
+        scope: str = "request",
+        request_id: Optional[str] = None,
+        enabled: bool = True,
+        listener: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
         self.scope = scope
         self.request_id = request_id or str(uuid.uuid4())
         self.enabled = enabled
@@ -73,6 +82,7 @@ class ProgressRecorder:
         self.events: List[ProgressEvent] = []
         self.metadata: Dict[str, Any] = {}
         self._timings: Dict[str, float] = {}
+        self._listener = listener
 
     def step(self, name: str, label: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
         """
@@ -87,6 +97,7 @@ class ProgressRecorder:
             return nullcontext()
         event = ProgressEvent(name=name, label=label or name, metadata=dict(metadata or {}))
         self.events.append(event)
+        self._notify(event)
         return _ProgressStep(self, event)
 
     def add_event(
@@ -112,6 +123,7 @@ class ProgressRecorder:
         if duration_ms is not None:
             self._register_timing(name, duration_ms)
         self.events.append(ev)
+        self._notify(ev)
 
     def _register_timing(self, name: str, duration_ms: float) -> None:
         self._timings[name] = duration_ms
@@ -133,6 +145,15 @@ class ProgressRecorder:
             "timings": self.timings(),
             "metadata": dict(self.metadata),
         }
+
+    def _notify(self, event: ProgressEvent) -> None:
+        if not self._listener:
+            return
+        try:
+            self._listener(asdict(event))
+        except Exception:
+            # Listener errors should not break progress recording
+            pass
 
 
 class AppDiagnostics:
