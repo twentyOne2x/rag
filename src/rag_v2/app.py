@@ -8,7 +8,7 @@ from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
 from src.rag_v2.logging_utils import clean_model_refs
 from src.rag_v2.instrumentation import AppDiagnostics, ProgressRecorder
 
-# Allow multiple origins: "https://www.mev.fyi,https://icm.fyi,http://localhost:3000"
+# Allow multiple origins: "https://www.icm.fyi,https://app.icm.fyi,http://localhost:3000"
 APP_ORIGINS = [o.strip() for o in os.getenv("APP_ORIGINS", os.getenv("APP_ORIGIN", "http://localhost:3000")).split(",") if o.strip()]
 
 app = FastAPI()

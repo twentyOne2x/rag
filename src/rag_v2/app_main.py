@@ -4,9 +4,11 @@ import os
 import sys
 from pathlib import Path
 
-from llama_index.core import Settings
+from llama_index.core import Settings, VectorStoreIndex
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding  # <-- ensure 3072D
+from llama_index.vector_stores.pinecone import PineconeVectorStore
+from pinecone import Pinecone
 
 # --- Make imports work whether run as "python src/rag_v2/app_main.py" or "python -m src.rag_v2.app_main" ---
 try:
@@ -20,26 +22,25 @@ except ImportError:
     from rag_v2.retriever.parent_child_retriever import ParentChildRetrieverV2  # type: ignore
     from rag_v2.query_engine_v2 import ParentChildQueryEngineV2  # type: ignore
 
-# Reuse your index loader (support both import styles)
-try:
-    from src.Llama_index_sandbox.index import load_index_from_disk  # type: ignore
-except Exception:
-    from Llama_index_sandbox.index import load_index_from_disk  # type: ignore
-
 from .instrumentation import AppDiagnostics, ProgressRecorder
 
 def _configure_models() -> None:
-    """
-    Configure both the LLM and the *embedding* model.
-    IMPORTANT: Embedder must match your Pinecone index dimension (3072).
-    """
-    # LLM
+    """Configure the LLM + embedder used for inference."""
     Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", "gpt-4o-mini"))
-
-    # Embeddings (set to 3072D)
     embed_model_name = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
-    # NOTE: text-embedding-3-large returns 3072-dim vectors by default.
     Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
+
+
+def _load_index_from_pinecone() -> VectorStoreIndex:
+    """Attach to the existing Pinecone index and wrap it as a VectorStoreIndex."""
+    api_key = os.environ["PINECONE_API_KEY"]
+    index_name = os.environ.get("PINECONE_INDEX_NAME", "icmfyi-v2")
+    namespace = os.environ.get("PINECONE_NAMESPACE", "videos")
+
+    pc = Pinecone(api_key=api_key)
+    pinecone_index = pc.Index(index_name)
+    vector_store = PineconeVectorStore(pinecone_index=pinecone_index, namespace=namespace)
+    return VectorStoreIndex.from_vector_store(vector_store)
 
 
 def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressRecorder | None = None):
@@ -52,50 +53,18 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
     with profiler.step("configure_models", "Configure LLM + embeddings"):
         _configure_models()
 
-    # Load index (will inherit Settings.embed_model for query embeddings)
-    with profiler.step("load_index", "Load vector index from disk") as step:
-        index = load_index_from_disk()
-        step.metadata["similarity_top_k"] = similarity_top_k
-
-    with profiler.step("vector_store_prepare", "Align Pinecone namespace") as step:
-        try:
-            from llama_index.vector_stores.pinecone import PineconeVectorStore
-
-            vs = getattr(index, "_vector_store", None)
-            if isinstance(vs, PineconeVectorStore):
-                # Try multiple spots – LI/Pinecone versions differ
-                idx_obj = getattr(vs, "_index", None) or getattr(vs, "index", None)
-                idx_name = (
-                        getattr(vs, "_index_name", None)
-                        or getattr(vs, "index_name", None)
-                        or getattr(idx_obj, "name", None)
-                        or getattr(idx_obj, "_name", None)
-                        or os.getenv("PINECONE_INDEX_NAME")  # last resort: env
-                )
-
-                ns_current = getattr(vs, "_namespace", None) or os.getenv("PINECONE_NAMESPACE", "videos")
-                print(f"[pinecone] reader index={idx_name} namespace={ns_current!r}")
-
-                target_ns = os.getenv("PINECONE_NAMESPACE", "videos")
-                if ns_current != target_ns:
-                    setattr(vs, "_namespace", target_ns)
-                    ns_current = target_ns
-                    print(f"[pinecone] forced namespace to {ns_current!r}")
-
-                # <<< CRITICAL: export both so parent_resolver uses the SAME index/ns >>>
-                if idx_name:
-                    os.environ["PINECONE_INDEX_NAME"] = idx_name
-                os.environ["PINECONE_NAMESPACE"] = ns_current
-
-                step.metadata.update({
-                    "index_name": idx_name,
-                    "namespace": ns_current,
-                })
-            else:
-                step.metadata["warning"] = "Not a PineconeVectorStore; parent enrichment will be skipped."
-        except Exception as e:
-            step.metadata["error"] = str(e)
-            print(f"[pinecone] namespace check skipped: {e}")
+    # Attach to Pinecone (inherits Settings.embed_model for query embeddings)
+    with profiler.step("load_index", "Load vector index from Pinecone") as step:
+        index = _load_index_from_pinecone()
+        idx_name = os.getenv("PINECONE_INDEX_NAME", "icmfyi-v2")
+        namespace = os.getenv("PINECONE_NAMESPACE", "videos")
+        os.environ["PINECONE_INDEX_NAME"] = idx_name
+        os.environ["PINECONE_NAMESPACE"] = namespace
+        step.metadata.update({
+            "similarity_top_k": similarity_top_k,
+            "index_name": idx_name,
+            "namespace": namespace,
+        })
 
     # Build base retriever, then wrap with ParentChildRetrieverV2
     with profiler.step("build_retriever", "Construct retriever stack") as step:
