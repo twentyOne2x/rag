@@ -11,7 +11,7 @@ fi
 gcloud auth configure-docker
 
 # Pull the latest Docker image
-docker pull gcr.io/mev-fyi/twitter-bot-app:latest
+docker pull gcr.io/icm-fyi/twitter-bot-app:latest
 
 # Run the Docker container
-docker run -d --name my_twitter_bot_container gcr.io/mev-fyi/twitter-bot-app:latest
+docker run -d --name my_twitter_bot_container gcr.io/icm-fyi/twitter-bot-app:latest

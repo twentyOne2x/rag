@@ -25,7 +25,7 @@ def set_secrets_from_cloud():
         os.environ.get("SECRET_PROJECT_ID")
         or os.environ.get("GOOGLE_CLOUD_PROJECT")
         or os.environ.get("PROJECT_ID")
-        or "mev-fyi"
+        or "icm-fyi"
     )
     secrets_to_fetch = [
         'OPENAI_API_KEY',
