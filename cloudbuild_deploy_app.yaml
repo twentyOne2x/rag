@@ -24,7 +24,7 @@ steps:
       - '--set-env-vars'
       - 'UVICORN_WORKERS=1,SECRET_PROJECT_ID=just-skyline-474622-e1'
       - '--update-secrets'
-      - 'OPENAI_API_KEY=OPENAI_API_KEY:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,PINECONE_API_ENVIRONMENT=PINECONE_API_ENVIRONMENT:latest,EMBEDDING_MODEL_NAME_OSS=EMBEDDING_MODEL_NAME_OSS:latest,EMBEDDING_MODEL_NAME_OPENAI=EMBEDDING_MODEL_NAME_OPENAI:latest,EMBEDDING_MODEL_NAME=EMBEDDING_MODEL_NAME:latest,ENVIRONMENT=ENVIRONMENT:latest,NUM_CHUNKS_RETRIEVED=NUM_CHUNKS_RETRIEVED:latest,MIN_CHUNKS_FOR_RESPONSE=MIN_CHUNKS_FOR_RESPONSE:latest,NUM_CHUNKS_SEARCHED_FOR_RERANKING=NUM_CHUNKS_SEARCHED_FOR_RERANKING:latest,LLM_MODEL_NAME=LLM_MODEL_NAME:latest,LLM_MODEL_NAME_OSS=LLM_MODEL_NAME_OSS:latest,LLM_MODEL_NAME_OPENAI=LLM_MODEL_NAME_OPENAI:latest,PINECONE_INDEX_NAME=PINECONE_INDEX_NAME:latest,EMBED_PROVIDER=EMBED_PROVIDER:latest,EMBED_MODEL=EMBED_MODEL:latest,EMBED_DIM=EMBED_DIM:latest,PINECONE_NAMESPACE=PINECONE_NAMESPACE:latest,YT_NAMESPACE_CONFIG=YT_NAMESPACE_CONFIG:latest,PINECONE_NAMESPACE_VIDEOS=PINECONE_NAMESPACE_VIDEOS:latest,PINECONE_NAMESPACE_STREAMS=PINECONE_NAMESPACE_STREAMS:latest,PIPELINE_STORAGE_DIR=PIPELINE_STORAGE_DIR:latest,VOICE_LIBRARY_DIR=VOICE_LIBRARY_DIR:latest,SPEAKER_EMBED_CACHE_DIR=SPEAKER_EMBED_CACHE_DIR:latest,VOICE_MATCH_THRESHOLD=VOICE_MATCH_THRESHOLD:latest,SPEAKER_MAP_DIR=SPEAKER_MAP_DIR:latest,VOICE_EMBED_BACKEND=VOICE_EMBED_BACKEND:latest,VOICE_AUTO_ENROLL=VOICE_AUTO_ENROLL:latest,VOICE_ENROLL_MIN_TALK_S=VOICE_ENROLL_MIN_TALK_S:latest,VOICE_AUTO_ENROLL_NAME=VOICE_AUTO_ENROLL_NAME:latest'
+      - 'OPENAI_API_KEY=OPENAI_API_KEY:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,PINECONE_API_ENVIRONMENT=PINECONE_API_ENVIRONMENT:latest'
 
 images:
   - 'gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA'
@@ -38,57 +38,3 @@ availableSecrets:
       env: 'PINECONE_API_KEY'
     - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_API_ENVIRONMENT/versions/latest
       env: 'PINECONE_API_ENVIRONMENT'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBEDDING_MODEL_NAME_OSS/versions/latest
-      env: 'EMBEDDING_MODEL_NAME_OSS'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBEDDING_MODEL_NAME_OPENAI/versions/latest
-      env: 'EMBEDDING_MODEL_NAME_OPENAI'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBEDDING_MODEL_NAME/versions/latest
-      env: 'EMBEDDING_MODEL_NAME'
-    - versionName: projects/just-skyline-474622-e1/secrets/ENVIRONMENT/versions/latest
-      env: 'ENVIRONMENT'
-    - versionName: projects/just-skyline-474622-e1/secrets/NUM_CHUNKS_RETRIEVED/versions/latest
-      env: 'NUM_CHUNKS_RETRIEVED'
-    - versionName: projects/just-skyline-474622-e1/secrets/MIN_CHUNKS_FOR_RESPONSE/versions/latest
-      env: 'MIN_CHUNKS_FOR_RESPONSE'
-    - versionName: projects/just-skyline-474622-e1/secrets/NUM_CHUNKS_SEARCHED_FOR_RERANKING/versions/latest
-      env: 'NUM_CHUNKS_SEARCHED_FOR_RERANKING'
-    - versionName: projects/just-skyline-474622-e1/secrets/LLM_MODEL_NAME/versions/latest
-      env: 'LLM_MODEL_NAME'
-    - versionName: projects/just-skyline-474622-e1/secrets/LLM_MODEL_NAME_OSS/versions/latest
-      env: 'LLM_MODEL_NAME_OSS'
-    - versionName: projects/just-skyline-474622-e1/secrets/LLM_MODEL_NAME_OPENAI/versions/latest
-      env: 'LLM_MODEL_NAME_OPENAI'
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_INDEX_NAME/versions/latest
-      env: 'PINECONE_INDEX_NAME'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBED_PROVIDER/versions/latest
-      env: 'EMBED_PROVIDER'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBED_MODEL/versions/latest
-      env: 'EMBED_MODEL'
-    - versionName: projects/just-skyline-474622-e1/secrets/EMBED_DIM/versions/latest
-      env: 'EMBED_DIM'
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_NAMESPACE/versions/latest
-      env: 'PINECONE_NAMESPACE'
-    - versionName: projects/just-skyline-474622-e1/secrets/YT_NAMESPACE_CONFIG/versions/latest
-      env: 'YT_NAMESPACE_CONFIG'
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_NAMESPACE_VIDEOS/versions/latest
-      env: 'PINECONE_NAMESPACE_VIDEOS'
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_NAMESPACE_STREAMS/versions/latest
-      env: 'PINECONE_NAMESPACE_STREAMS'
-    - versionName: projects/just-skyline-474622-e1/secrets/PIPELINE_STORAGE_DIR/versions/latest
-      env: 'PIPELINE_STORAGE_DIR'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_LIBRARY_DIR/versions/latest
-      env: 'VOICE_LIBRARY_DIR'
-    - versionName: projects/just-skyline-474622-e1/secrets/SPEAKER_EMBED_CACHE_DIR/versions/latest
-      env: 'SPEAKER_EMBED_CACHE_DIR'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_MATCH_THRESHOLD/versions/latest
-      env: 'VOICE_MATCH_THRESHOLD'
-    - versionName: projects/just-skyline-474622-e1/secrets/SPEAKER_MAP_DIR/versions/latest
-      env: 'SPEAKER_MAP_DIR'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_EMBED_BACKEND/versions/latest
-      env: 'VOICE_EMBED_BACKEND'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_AUTO_ENROLL/versions/latest
-      env: 'VOICE_AUTO_ENROLL'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_ENROLL_MIN_TALK_S/versions/latest
-      env: 'VOICE_ENROLL_MIN_TALK_S'
-    - versionName: projects/just-skyline-474622-e1/secrets/VOICE_AUTO_ENROLL_NAME/versions/latest
-      env: 'VOICE_AUTO_ENROLL_NAME'

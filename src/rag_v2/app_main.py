@@ -23,23 +23,33 @@ except ImportError:
     from rag_v2.query_engine_v2 import ParentChildQueryEngineV2  # type: ignore
 
 from .instrumentation import AppDiagnostics, ProgressRecorder
+from .settings import config_value
 
 def _configure_models() -> None:
     """Configure the LLM + embedder used for inference."""
-    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", "gpt-4o-mini"))
-    embed_model_name = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+    llm_model = config_value("models.llm_primary", default="gpt-4o-mini")
+    embed_model_name = config_value("models.embedding_primary", default="text-embedding-3-large")
+    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", llm_model))
     Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
 
 
 def _load_index_from_pinecone() -> VectorStoreIndex:
     """Attach to the existing Pinecone index and wrap it as a VectorStoreIndex."""
     api_key = os.environ["PINECONE_API_KEY"]
-    index_name = os.environ.get("PINECONE_INDEX_NAME", "icmfyi-v2")
-    namespace = os.environ.get("PINECONE_NAMESPACE", "videos")
+    index_name = os.environ.get(
+        "PINECONE_INDEX_NAME",
+        config_value("pinecone.index_name", default="icmfyi-v2"),
+    )
+    namespace = os.environ.get(
+        "PINECONE_NAMESPACE",
+        config_value("pinecone.namespace", default="videos"),
+    )
 
     pc = Pinecone(api_key=api_key)
     pinecone_index = pc.Index(index_name)
     vector_store = PineconeVectorStore(pinecone_index=pinecone_index, namespace=namespace)
+    os.environ.setdefault("PINECONE_INDEX_NAME", index_name)
+    os.environ.setdefault("PINECONE_NAMESPACE", namespace)
     return VectorStoreIndex.from_vector_store(vector_store)
 
 
@@ -56,8 +66,8 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
     # Attach to Pinecone (inherits Settings.embed_model for query embeddings)
     with profiler.step("load_index", "Load vector index from Pinecone") as step:
         index = _load_index_from_pinecone()
-        idx_name = os.getenv("PINECONE_INDEX_NAME", "icmfyi-v2")
-        namespace = os.getenv("PINECONE_NAMESPACE", "videos")
+        idx_name = os.getenv("PINECONE_INDEX_NAME", config_value("pinecone.index_name", default="icmfyi-v2"))
+        namespace = os.getenv("PINECONE_NAMESPACE", config_value("pinecone.namespace", default="videos"))
         os.environ["PINECONE_INDEX_NAME"] = idx_name
         os.environ["PINECONE_NAMESPACE"] = namespace
         step.metadata.update({

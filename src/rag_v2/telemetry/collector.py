@@ -8,10 +8,14 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Iterable, List, Optional
 
 from .writer import JsonlTelemetryWriter
+from ..settings import config_value
 
 
 def _default_env() -> str:
-    return os.getenv("RAG_ENV", os.getenv("ENVIRONMENT", "dev"))
+    return os.getenv(
+        "RAG_ENV",
+        config_value("environment", default="dev"),
+    )
 
 
 @dataclass
@@ -89,4 +93,3 @@ class TelemetryCollector:
     def __len__(self) -> int:
         with self._lock:
             return len(self.events)
-

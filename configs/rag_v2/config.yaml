@@ -1,0 +1,32 @@
+environment: local
+models:
+  embedding_primary: text-embedding-3-large
+  embedding_openai: text-embedding-3-large
+  embedding_oss: thenlper/gte-large
+  embed_provider: openai
+  embed_dim: 3072
+  llm_primary: gpt-4o-mini
+  llm_openai: gpt-3.5-turbo
+  llm_oss: meta-llama/Llama-2-7b-chat-hf
+retrieval:
+  num_chunks_retrieved: 15
+  min_chunks_for_response: 5
+  num_chunks_searched_for_reranking: 70
+  debug: false
+pinecone:
+  index_name: icmfyi-v2
+  namespace: videos
+  streams_namespace: streams
+youtube:
+  namespace_config: videos
+paths:
+  pipeline_storage: ./pipeline_storage
+  voice_library: ./voice_library
+  speaker_embed_cache: ./speaker_cache
+  speaker_map: ./speaker_map
+voice:
+  match_threshold: 0.75
+  embed_backend: default
+  auto_enroll: false
+  auto_enroll_name: auto
+  enroll_min_talk_s: 3

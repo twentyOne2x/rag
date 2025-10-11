@@ -32,6 +32,7 @@ from .logging_utils import (
 from .router.video_router import wants_definition
 from .instrumentation import AppDiagnostics, ProgressRecorder
 from .telemetry import TelemetryCollector, JsonlTelemetryWriter
+from .settings import config_value
 
 log = setup_logger("rag_v2.qe")
 
@@ -391,7 +392,10 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
         collector = TelemetryCollector(
             service_name=os.getenv("RAG_SERVICE_NAME", "rag-v2"),
-            environment=os.getenv("RAG_ENV", os.getenv("ENVIRONMENT", "dev")),
+            environment=os.getenv(
+                "RAG_ENV",
+                config_value("environment", default="dev"),
+            ),
             writer=self._telemetry_writer,
         )
 
