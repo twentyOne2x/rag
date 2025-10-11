@@ -93,6 +93,7 @@ ENT_CANON_MAP = {
     "cupsy": "Cupsey",
     "haster": "Aster",
     "astro": "Astro",
+    "hyper liquid": "Hyperliquid",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
