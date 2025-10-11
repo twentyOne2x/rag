@@ -14,8 +14,9 @@ RUN apt-get update && \
     pip install --no-cache-dir -r requirements.txt
 
 # 2· application code --------------------------------------------------
-# Only copy the rag_v2 service source tree (and any shared assets it needs)
+# Only copy the rag_v2 service source tree (and its configuration assets)
 COPY src/rag_v2 /app/src/rag_v2
+COPY configs/rag_v2 /app/configs/rag_v2
 
 RUN echo "=== AFTER COPY ===" && ls -Rla /app
 
