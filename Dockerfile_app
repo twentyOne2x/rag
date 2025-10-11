@@ -5,7 +5,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # requirements first → better cache
-COPY requirements.txt .
+COPY requirements.txt ./requirements.txt
 COPY mev-defaults.env /etc/mev-defaults.env
 
 RUN apt-get update && \
@@ -14,9 +14,8 @@ RUN apt-get update && \
     pip install --no-cache-dir -r requirements.txt
 
 # 2· application code --------------------------------------------------
-# Manually stage required dataset artefacts (the directory is ignored in .dockerignore)
-COPY datasets/evaluation_data /app/datasets/evaluation_data
-COPY . .
+# Only copy the rag_v2 service source tree (and any shared assets it needs)
+COPY src/rag_v2 /app/src/rag_v2
 
 RUN echo "=== AFTER COPY ===" && ls -Rla /app
 
