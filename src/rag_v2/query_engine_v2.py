@@ -69,6 +69,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         self._active_channel_filter: Optional[Dict[str, Any]] = None
         self._telemetry_enabled: bool = os.getenv("RAG_ENABLE_TELEMETRY", "1") in ("1", "true", "yes")
         self._telemetry_writer: Optional[JsonlTelemetryWriter] = self._init_telemetry_writer()
+        self._pending_hints: Dict[str, Any] = {}
 
     @staticmethod
     def _normalize_channel_filter(channel_filter: Optional[Dict[str, Any]]) -> Optional[Dict[str, List[str]]]:
@@ -178,12 +179,14 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             # last-resort: return raw as-is
             return raw
 
+    @staticmethod
     def _sigmoid(x: float) -> float:
         try:
             return 1.0 / (1.0 + math.exp(-float(x)))
         except Exception:
             return float(x)
 
+    @staticmethod
     def _percentile_cut(scores, p: float) -> float:
         if not scores:
             return float("inf")
@@ -191,10 +194,12 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         idx = max(0, min(len(s) - 1, int(round(p * (len(s) - 1)))))
         return float(s[idx])
 
+    @staticmethod
     def _rough_token_count(txt: str) -> int:
         # ~4 chars/token heuristic
         return max(1, len(txt) // 4)
 
+    @staticmethod
     def _hms_to_seconds(hms: str) -> int:
         if not hms: return -1
         try:
@@ -332,12 +337,24 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         """
         channel_filter_raw = kwargs.pop("channel_filter", None)
         channel_filter = self._normalize_channel_filter(channel_filter_raw)
+        history_hint = kwargs.pop("history", None)
+        router_scope_hint = kwargs.pop("router_scope", None)
+        definition_hint = kwargs.pop("definition_mode", None)
+        extra_kwargs = dict(kwargs)
+        if extra_kwargs:
+            log.debug("qe[query] dropping unsupported kwargs: %s", sorted(extra_kwargs.keys()))
 
         recorder = progress or ProgressRecorder(scope="rag_query")
         prev = self._active_progress
         prev_filter = self._active_channel_filter
         self._active_progress = recorder
         self._active_channel_filter = channel_filter
+        prev_hints = self._pending_hints
+        self._pending_hints = {
+            "history": history_hint,
+            "router_scope": router_scope_hint,
+            "definition_mode": definition_hint,
+        }
 
         if channel_filter and hasattr(self._retriever, "set_channel_filter"):
             try:
@@ -353,10 +370,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         recorder.metadata["channel_filter"] = channel_filter
 
         try:
-            return super().query(query, **kwargs)
+            return super().query(query)
         finally:
             self._active_progress = prev
             self._active_channel_filter = prev_filter
+            self._pending_hints = prev_hints
             if hasattr(self._retriever, "set_channel_filter"):
                 try:
                     self._retriever.set_channel_filter(prev_filter)
@@ -422,10 +440,12 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         progress = self._active_progress or ProgressRecorder(scope="rag_query")
         progress.metadata.setdefault("query", q)
 
+        hints = dict(getattr(self, "_pending_hints", {}) or {})
+
         # Optional hints the caller may provide (history, router scope, definition mode, etc.).
-        history = kwargs.get("history")
-        router_scope = kwargs.get("router_scope")
-        definition_mode = kwargs.get("definition_mode")
+        history = hints.get("history")
+        router_scope = hints.get("router_scope")
+        definition_mode = hints.get("definition_mode")
 
         if history is not None:
             progress.metadata["history_len"] = len(history) if hasattr(history, "__len__") else 1

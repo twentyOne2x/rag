@@ -365,7 +365,7 @@ from __future__ import annotations
 import os
 from llama_index.core import Settings
 from llama_index.llms.openai import OpenAI
-from src.Llama_index_sandbox.index import load_index_from_disk  # reuse your loader
+from src.rag_v2.indexer import load_index as load_index_from_disk  # reuse your loader
 from .retriever.parent_child_retriever.py import ParentChildRetrieverV2  # noqa
 EOF
 # Fix typo import path in app_main (heredoc split to keep it readable)

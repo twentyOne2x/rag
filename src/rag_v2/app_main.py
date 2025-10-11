@@ -4,11 +4,9 @@ import os
 import sys
 from pathlib import Path
 
-from llama_index.core import Settings, VectorStoreIndex
+from llama_index.core import Settings
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding  # <-- ensure 3072D
-from llama_index.vector_stores.pinecone import PineconeVectorStore
-from pinecone import Pinecone
 
 # --- Make imports work whether run as "python src/rag_v2/app_main.py" or "python -m src.rag_v2.app_main" ---
 try:
@@ -24,6 +22,7 @@ except ImportError:
 
 from .instrumentation import AppDiagnostics, ProgressRecorder
 from .settings import config_value
+from .indexer import load_index
 
 def _configure_models() -> None:
     """Configure the LLM + embedder used for inference."""
@@ -33,9 +32,8 @@ def _configure_models() -> None:
     Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
 
 
-def _load_index_from_pinecone() -> VectorStoreIndex:
-    """Attach to the existing Pinecone index and wrap it as a VectorStoreIndex."""
-    api_key = os.environ["PINECONE_API_KEY"]
+def _load_index_from_pinecone():
+    """Attach to the existing Pinecone index via rag_v2.indexer."""
     index_name = os.environ.get(
         "PINECONE_INDEX_NAME",
         config_value("pinecone.index_name", default="icmfyi-v2"),
@@ -44,13 +42,10 @@ def _load_index_from_pinecone() -> VectorStoreIndex:
         "PINECONE_NAMESPACE",
         config_value("pinecone.namespace", default="videos"),
     )
-
-    pc = Pinecone(api_key=api_key)
-    pinecone_index = pc.Index(index_name)
-    vector_store = PineconeVectorStore(pinecone_index=pinecone_index, namespace=namespace)
     os.environ.setdefault("PINECONE_INDEX_NAME", index_name)
+    index = load_index(namespace=namespace)
     os.environ.setdefault("PINECONE_NAMESPACE", namespace)
-    return VectorStoreIndex.from_vector_store(vector_store)
+    return index
 
 
 def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressRecorder | None = None):

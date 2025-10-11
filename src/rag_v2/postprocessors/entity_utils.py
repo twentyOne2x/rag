@@ -1,29 +1,7 @@
 import re
 from typing import Iterable, List
 
-# Entity canonicalization map
-ENT_CANON_MAP = {
-    "solana": "Solana",
-    "sol": "SOL",
-    "soul": "SOL",
-    "$sol": "SOL",
-    "$soul": "SOL",
-    "Seoul": "SOL",
-    "anza labs": "Anza",
-    "firedancer": "Firedancer",
-    "anza": "Anza",
-    "anza labs": "Anza",
-    "firedancer": "Firedancer",
-    "frankendancer": "Firedancer",
-    "alpenglow": "Alpenglow",
-    "aster": "Aster",
-    "Salana": "Solana",
-    "Cupsy": "Cupsey",
-    "cupsy":"Cupsey",
-    "haster":"aster",
-    "astro":"astro",
-}
-ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
+from ..config import ENT_CANON_MAP
 
 
 def canon_entity(s: str) -> str:

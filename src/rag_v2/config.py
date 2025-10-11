@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 import os
 from dataclasses import dataclass
-from typing import Optional  # <-- add
+from typing import Optional
 
 @dataclass
 class RetrievalConfig:
@@ -36,7 +37,7 @@ class RetrievalConfig:
 
     # output quoting
     quote_min_count: int = int(os.getenv("QUOTE_MIN_COUNT", "4"))
-    max_final_nodes: int = int(os.getenv("MAX_FINAL_NODES", "12"))\
+    max_final_nodes: int = int(os.getenv("MAX_FINAL_NODES", "12"))
 
     streams_ns: str = os.getenv("PINECONE_STREAMS_NS", "streams")
     default_ns: str = os.getenv("PINECONE_DEFAULT_NS", "")
@@ -81,20 +82,17 @@ ENT_CANON_MAP = {
     "soul": "SOL",
     "$sol": "SOL",
     "$soul": "SOL",
-    "Seoul": "SOL",
+    "seoul": "SOL",
     "anza labs": "Anza",
     "firedancer": "Firedancer",
     "anza": "Anza",
-    "anza labs": "Anza",
-    "firedancer": "Firedancer",
     "frankendancer": "Firedancer",
     "alpenglow": "Alpenglow",
     "aster": "Aster",
-    "Salana": "Solana",
-    "Cupsy": "Cupsey",
-    "cupsy":"Cupsey",
-    "haster": "aster",
-    "astro": "astro",
+    "salana": "Solana",
+    "cupsy": "Cupsey",
+    "haster": "Aster",
+    "astro": "Astro",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
