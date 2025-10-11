@@ -142,6 +142,23 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             )
             out.append(view)
         return out
+    @staticmethod
+    def _source_snapshot(nodes: List[NodeWithScore], limit: int = 5) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for n in nodes[:limit]:
+            md = n.node.metadata or {}
+            title = md.get("title") or md.get("parent_title")
+            if not title:
+                continue
+            out.append(
+                {
+                    "title": title,
+                    "channel": md.get("channel_name") or md.get("parent_channel_name"),
+                    "score": round(float(n.score or 0.0), 4),
+                    "segment_id": md.get("segment_id") or md.get("id"),
+                }
+            )
+        return out
 
     def _annotate_speakers(self, nodes):
         out = []
@@ -485,6 +502,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     scores = [float(n.score or 0.0) for n in nodes]
                     retrieve_step.metadata["score_min"] = min(scores)
                     retrieve_step.metadata["score_max"] = max(scores)
+                    retrieve_step.metadata["top_sources"] = self._source_snapshot(nodes)
 
             trace["stage1_count"] = len(nodes)
 
@@ -544,18 +562,19 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                 kept.extend(extra)
                             nodes = kept
 
-                            trace["ce_keep_policy"] = {
-                                "percentile": CFG.ce_keep_percentile,
-                                "abs_min": CFG.ce_abs_min,
-                                "min_keep": CFG.ce_min_keep,
-                                "pcut": pcut,
-                                "kept_after_ce": len(nodes),
-                            }
-                            ce_step.metadata.update({
-                                "kept_after_ce": len(nodes),
-                                "pcut": pcut,
-                            })
-                        trace["ce_ms"] = ce_step.duration_ms
+                        trace["ce_keep_policy"] = {
+                            "percentile": CFG.ce_keep_percentile,
+                            "abs_min": CFG.ce_abs_min,
+                            "min_keep": CFG.ce_min_keep,
+                            "pcut": pcut,
+                            "kept_after_ce": len(nodes),
+                        }
+                        ce_step.metadata.update({
+                            "kept_after_ce": len(nodes),
+                            "pcut": pcut,
+                            "kept_sources": self._source_snapshot(nodes),
+                        })
+                    trace["ce_ms"] = ce_step.duration_ms
                 else:
                     progress.add_event(
                         "rerank_cross_encoder",
@@ -573,6 +592,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                         nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
                         nodes = self._speaker_propagator._postprocess_nodes(nodes)
                         review_step.metadata["output_count"] = len(nodes)
+                        review_step.metadata["sample_sources"] = self._source_snapshot(nodes)
 
                     with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
                         stitch_step.metadata["input_count"] = len(nodes)
@@ -580,6 +600,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                         nodes = nodes[: self._final_k(q)]
                         nodes = self._annotate_speakers(nodes)
                         stitch_step.metadata["output_count"] = len(nodes)
+                        stitch_step.metadata["final_candidates"] = self._source_snapshot(nodes)
 
                     final_nodes = nodes
                 else:
@@ -661,6 +682,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             resp = self._synthesize_clean(query_bundle, nodes)
             synth_step.metadata["llm_model"] = trace["models"].get("llm_model")
             synth_step.metadata["tokens_estimate"] = self._rough_token_count(str(resp))
+            synth_step.metadata["final_sources"] = self._source_snapshot(nodes, limit=10)
         trace["synthesize_ms"] = synth_step.duration_ms
 
         progress.add_event(
