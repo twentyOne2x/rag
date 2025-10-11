@@ -1,9 +1,23 @@
 # cloudbuild_app.yaml
 steps:
+# 0. Pull latest image to warm the build cache (ignore failures on first run)
+- name: gcr.io/cloud-builders/docker
+  id: fetch-cache
+  entrypoint: bash
+  args:
+    - -c
+    - >
+      docker pull us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:latest || true
+
 # 1. Build and tag
 - name: gcr.io/cloud-builders/docker
+  env:
+    - DOCKER_BUILDKIT=1
+    - BUILDKIT_INLINE_CACHE=1
   args:
     - build
+    - --cache-from=type=registry,ref=us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:latest
+    - --cache-to=type=inline
     - -t
     - us-east1-docker.pkg.dev/just-skyline-474622-e1/rag/rag:$SHORT_SHA
     - -t
@@ -58,3 +72,5 @@ images:
 
 options:
   logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 200

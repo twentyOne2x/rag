@@ -38,3 +38,8 @@ availableSecrets:
       env: 'PINECONE_API_KEY'
     - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_API_ENVIRONMENT/versions/latest
       env: 'PINECONE_API_ENVIRONMENT'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 50

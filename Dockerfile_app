@@ -1,5 +1,7 @@
+# syntax=docker/dockerfile:1.7
+
 # Use a slimmer Python base image
-FROM python:3.11-slim
+FROM python:3.11-slim as base
 
 # Set the working directory in the container
 WORKDIR /app
@@ -7,10 +9,14 @@ WORKDIR /app
 # requirements first → better cache
 COPY requirements.txt ./requirements.txt
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir -r requirements.txt
+    rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # 2· application code --------------------------------------------------
 # Only copy the rag_v2 service source tree (and its configuration assets)
@@ -26,8 +32,9 @@ ENV UVICORN_PORT=8080
 ENV UVICORN_WORKERS=1
 
 # Download NLTK data once at build time
-RUN python -m nltk.downloader -d /usr/local/share/nltk_data stopwords punkt \
- && chmod -R a+r /usr/local/share/nltk_data
+RUN --mount=type=cache,target=/root/.cache/nltk \
+    python -m nltk.downloader -d /usr/local/share/nltk_data stopwords punkt && \
+    chmod -R a+r /usr/local/share/nltk_data
 ENV NLTK_DATA=/usr/local/share/nltk_data
 
 
