@@ -31,8 +31,8 @@ googleapis-common-protos==1.70.0
 greenlet==3.2.4
 griffe==1.14.0
 grpc-google-iam-v1==0.14.2
-grpcio==1.75.0
-grpcio-status==1.75.0
+grpcio==1.62.2
+grpcio-status==1.62.2
 h11==0.16.0
 hf-xet==1.1.10
 gunicorn==22.0.0
@@ -95,7 +95,7 @@ pinecone-plugin-interface==0.0.7
 platformdirs==4.4.0
 propcache==0.3.2
 proto-plus==1.26.1
-protobuf==6.32.1
+protobuf==5.29.2
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pydantic==2.11.9

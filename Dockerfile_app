@@ -26,6 +26,9 @@ ENV FLASK_ENV=production
 ENV FLASK_APP=src/Llama_index_sandbox/app.py
 ENV FLASK_RUN_HOST=0.0.0.0
 ENV FLASK_RUN_PORT=8080
+ENV GUNICORN_WORKERS=1
+ENV GUNICORN_TIMEOUT=3600
+ENV GUNICORN_BIND=0.0.0.0:8080
 
 # Download NLTK data once at build time
 RUN python -m nltk.downloader -d /usr/local/share/nltk_data stopwords punkt \
@@ -37,7 +40,7 @@ EXPOSE 8080
 
 # 4· entrypoint --------------------------------------------------------
 CMD ["bash", "-c", "set -a && source /etc/mev-defaults.env && \
-     exec gunicorn --preload --timeout 3600 -w 4 -b 0.0.0.0:8080 src.Llama_index_sandbox.app:app"]
+     exec gunicorn --preload --timeout ${GUNICORN_TIMEOUT:-3600} -w ${GUNICORN_WORKERS:-1} -b ${GUNICORN_BIND:-0.0.0.0:8080} src.Llama_index_sandbox.app:app"]
 
 # NOTE on number of gunicorn workers: If you're deploying your container on Google Cloud Platform and you've configured each instance to have 2 vCPUs, then
 # you effectively have 2 cores available for each instance. This information is crucial for configuring the number of Gunicorn workers optimally.

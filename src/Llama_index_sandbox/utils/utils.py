@@ -131,13 +131,36 @@ def timeit(func):
 # ------------------------- Index params -------------------------
 
 def get_last_index_embedding_params():
-    index_dir = f"{root_dir}/.storage/research_pdf/"
-    index = sorted(os.listdir(index_dir))[-1].split("_")
-    index_date = index[0]  # unused, kept for compatibility
-    embedding_model_name = index[1]
-    embedding_model_chunk_size = int(index[2])
-    chunk_overlap = int(index[3])
+    """Return the metadata encoded in the most recent index folder.
+
+    When the persisted index assets are unavailable (e.g. in a fresh Cloud Run
+    container) fall back to sensible defaults driven by environment variables
+    so the service can still boot.
+    """
+    index_dir = Path(root_dir) / ".storage" / "research_pdf"
+    fallback_model = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-large")
+    fallback_chunk_size = int(os.getenv("DEFAULT_TEXT_SPLITTER_CHUNK_SIZE", "750"))
+    fallback_chunk_overlap = int(os.getenv("DEFAULT_TEXT_SPLITTER_CHUNK_OVERLAP", "10"))
     vector_space_distance_metric = "cosine"
+
+    try:
+        entries = sorted(p for p in index_dir.iterdir() if p.is_dir())
+    except FileNotFoundError:
+        logging.warning("Index directory %s not found; using fallback embedding parameters.", index_dir)
+        return fallback_model, fallback_chunk_size, fallback_chunk_overlap, vector_space_distance_metric
+
+    if not entries:
+        logging.warning("Index directory %s is empty; using fallback embedding parameters.", index_dir)
+        return fallback_model, fallback_chunk_size, fallback_chunk_overlap, vector_space_distance_metric
+
+    latest = entries[-1].name.split("_")
+    if len(latest) < 4:
+        logging.warning("Malformed index folder name '%s'; using fallback embedding parameters.", entries[-1].name)
+        return fallback_model, fallback_chunk_size, fallback_chunk_overlap, vector_space_distance_metric
+
+    embedding_model_name = latest[1]
+    embedding_model_chunk_size = int(latest[2])
+    chunk_overlap = int(latest[3])
     return embedding_model_name, embedding_model_chunk_size, chunk_overlap, vector_space_distance_metric
 
 # ------------------------- Chat utils -------------------------
