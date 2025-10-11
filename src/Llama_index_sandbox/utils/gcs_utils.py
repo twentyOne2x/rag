@@ -21,7 +21,12 @@ def set_secrets_from_cloud():
     """
     Sets the necessary secrets as environment variables from Secret Manager.
     """
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "mev-fyi")
+    project_id = (
+        os.environ.get("SECRET_PROJECT_ID")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("PROJECT_ID")
+        or "mev-fyi"
+    )
     secrets_to_fetch = [
         'OPENAI_API_KEY',
         'ASSEMBLY_AI_API_KEY',
@@ -45,6 +50,15 @@ def set_secrets_from_cloud():
     ]
 
     for secret_name in secrets_to_fetch:
-        if secret_name not in os.environ:
-            logging.info(f"set_secrets_from_cloud: fetching [{secret_name}] from Secrets Manager")
+        if secret_name in os.environ:
+            continue
+        try:
+            logging.info(f"set_secrets_from_cloud: fetching [{secret_name}] from Secrets Manager (project={project_id})")
             os.environ[secret_name] = get_secret(project_id, secret_name)
+        except Exception as exc:  # pragma: no cover
+            logging.warning(
+                "Failed to fetch secret '%s' from project '%s': %s",
+                secret_name,
+                project_id,
+                exc,
+            )
