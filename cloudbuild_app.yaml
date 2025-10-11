@@ -58,12 +58,3 @@ images:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-availableSecrets:
-  secretManager:
-    - versionName: projects/just-skyline-474622-e1/secrets/OPENAI_API_KEY/versions/latest
-      env: _OPENAI_API_KEY
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_API_ENVIRONMENT/versions/latest
-      env: _PINECONE_API_ENVIRONMENT
-    - versionName: projects/just-skyline-474622-e1/secrets/PINECONE_API_KEY/versions/latest
-      env: _PINECONE_API_KEY
