@@ -417,10 +417,22 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         summary["total_ms"] = progress_summary.get("total_ms")
         return summary
 
-    def _query(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
+    def _query(self, query_bundle: QueryBundle, **kwargs) -> RESPONSE_TYPE:
         q = query_bundle.query_str
         progress = self._active_progress or ProgressRecorder(scope="rag_query")
         progress.metadata.setdefault("query", q)
+
+        # Optional hints the caller may provide (history, router scope, definition mode, etc.).
+        history = kwargs.get("history")
+        router_scope = kwargs.get("router_scope")
+        definition_mode = kwargs.get("definition_mode")
+
+        if history is not None:
+            progress.metadata["history_len"] = len(history) if hasattr(history, "__len__") else 1
+        if router_scope:
+            progress.metadata["router_scope"] = router_scope
+        if definition_mode is not None:
+            progress.metadata["definition_mode"] = bool(definition_mode)
 
         trace: Dict[str, Any] = {
             "query": q,
@@ -429,6 +441,9 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         }
         trace["request_id"] = progress.request_id
         trace["channel_filter"] = self._active_channel_filter
+        trace["router_scope"] = router_scope
+        trace["definition_mode"] = definition_mode
+        trace["history_present"] = bool(history)
 
         self._last_abort_details = None
         nodes: List[NodeWithScore] = []
