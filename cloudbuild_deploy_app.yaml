@@ -22,7 +22,7 @@ steps:
       - '--cpu'
       - '2'
       - '--set-env-vars'
-      - 'UVICORN_WORKERS=1,SECRET_PROJECT_ID=just-skyline-474622-e1'
+      - 'UVICORN_WORKERS=1,SECRET_PROJECT_ID=just-skyline-474622-e1,CE_MODEL=BAAI/bge-reranker-base'
       - '--update-secrets'
       - 'OPENAI_API_KEY=OPENAI_API_KEY:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,PINECONE_API_ENVIRONMENT=PINECONE_API_ENVIRONMENT:latest'
 
