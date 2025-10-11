@@ -1,12 +1,14 @@
 # app.py
 import os, asyncio
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
 from src.rag_v2.logging_utils import clean_model_refs
 from src.rag_v2.instrumentation import AppDiagnostics, ProgressRecorder
+from src.rag_v2.channel_catalog import channel_catalog, channel_names
+from src.rag_v2.settings import config_value
 
 # Allow multiple origins: "https://www.icm.fyi,https://app.icm.fyi,http://localhost:3000"
 APP_ORIGINS = [o.strip() for o in os.getenv("APP_ORIGINS", os.getenv("APP_ORIGIN", "http://localhost:3000")).split(",") if o.strip()]
@@ -36,6 +38,17 @@ class ChannelFilter(BaseModel):
     exclude_names: Optional[List[str]] = None
 
 
+class ChannelInfo(BaseModel):
+    name: str
+    count: Optional[int] = None
+
+
+class ChannelsResp(BaseModel):
+    scope: str
+    channels: List[ChannelInfo]
+    default_selected: List[str]
+
+
 class ChatReq(BaseModel):
     message: str
     # Accept both names; frontend currently sends "chat_history"
@@ -54,6 +67,14 @@ class ChatResp(BaseModel):
     formatted_metadata: Optional[str] = None
     request_id: Optional[str] = None
     diagnostics: Optional[Dict[str, Any]] = None
+
+
+@app.get("/channels", response_model=ChannelsResp)
+def channels(scope: str = Query(default="videos", min_length=1)) -> ChannelsResp:
+    normalized_scope = scope or "videos"
+    catalog = [ChannelInfo(**entry) for entry in channel_catalog(normalized_scope)]
+    defaults = [entry.name for entry in catalog]
+    return ChannelsResp(scope=normalized_scope, channels=catalog, default_selected=defaults)
 
 @app.get("/healthz")
 def healthz():
@@ -93,6 +114,15 @@ async def chat(req: ChatReq):
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if req.channel_filter:
         channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+    if channel_filter_payload:
+        scope_for_filter = req.scope or config_value("pinecone.namespace", default="videos")
+        include_names = channel_filter_payload.get("include_names")
+        if include_names:
+            known = set(channel_names(scope_for_filter))
+            if known and known.issubset(set(include_names)):
+                channel_filter_payload.pop("include_names", None)
         if not channel_filter_payload:
             channel_filter_payload = None
     if channel_filter_payload:
