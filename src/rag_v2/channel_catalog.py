@@ -7,16 +7,25 @@ from typing import Dict, Iterable, List
 
 DEFAULT_SCOPE = "videos"
 
-_CHANNEL_FILES: Dict[str, Path] = {
-    "videos": Path(__file__).resolve().parents[2] / "configs" / "rag_v2" / "channels_videos.json",
-}
+_CHANNEL_FILE = Path(__file__).resolve().parents[2] / "configs" / "rag_v2" / "channels.json"
 
 
 def _config_path(scope: str) -> Path | None:
-    path = _CHANNEL_FILES.get(scope)
-    if path is not None:
-        return path
-    return None
+    if not _CHANNEL_FILE.exists():
+        return None
+    try:
+        with _CHANNEL_FILE.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+        namespaces = payload.get("namespaces") or {}
+        if not isinstance(namespaces, dict):
+            return None
+        ns = namespaces.get(scope)
+        if not isinstance(ns, dict):
+            return None
+        channels = ns.get("channels") or []
+        return channels
+    except Exception:
+        return None
 
 
 def _normalise_entries(raw: Iterable) -> List[Dict[str, object]]:
@@ -41,17 +50,10 @@ def channel_catalog(scope: str = DEFAULT_SCOPE) -> List[Dict[str, object]]:
     """Return a list of channel dictionaries for the provided scope."""
 
     path = _config_path(scope)
-    if path is None or not path.exists():
+    if path is None:
         return []
-    data = []
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle) or []
-    except Exception:
-        return []
-
-    catalog = _normalise_entries(data)
-    catalog.sort(key=lambda entry: (-(entry.get("count", 0) or 0), str(entry.get("name", "")).lower()))
+    catalog = _normalise_entries(path)
+    catalog.sort(key=lambda entry: str(entry.get("name", "")).lower())
     return catalog
 
 
