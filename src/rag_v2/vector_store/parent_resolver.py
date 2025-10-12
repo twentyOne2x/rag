@@ -85,6 +85,8 @@ def fetch_parent_meta(parent_ids: Iterable[str], namespace: str | None = None) -
             "parent_published_at": date,
             "parent_published_date": date,
             "parent_url": (str(meta.get("url")) if meta.get("url") is not None else None),
+            # surface parent summary when present so downstream can use it
+            "parent_topic_summary": meta.get("topic_summary") or meta.get("parent_topic_summary"),
         }
         _CACHE[str(pid)] = mapped
         found += 1

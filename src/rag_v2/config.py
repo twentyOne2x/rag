@@ -75,6 +75,15 @@ class RetrievalConfig:
     router_boost_mult: float = float(os.getenv("ROUTER_BOOST_MULT", "1.25"))
     streams_bias_mult: float = float(os.getenv("STREAMS_BIAS_MULT", "1.15"))
 
+    # --- Parent topic summary features ---
+    enable_summary_boost: bool = os.getenv("ENABLE_SUMMARY_BOOST", "1") in ("1", "true", "yes")
+    summary_boost_mult: float = float(os.getenv("SUMMARY_BOOST_MULT", "1.05"))
+    summary_rerank_alpha_def: float = float(os.getenv("SUMMARY_RERANK_ALPHA_DEF", "0.2"))
+    summary_rerank_alpha_default: float = float(os.getenv("SUMMARY_RERANK_ALPHA_DEFAULT", "0.05"))
+    enable_parent_summary_context: bool = os.getenv("ENABLE_PARENT_SUMMARY_CONTEXT", "1") in ("1","true","yes")
+    summary_max_len_chars: int = int(os.getenv("SUMMARY_MAX_LEN_CHARS", "600"))
+    summary_context_token_cap: int = int(os.getenv("SUMMARY_CONTEXT_TOKEN_CAP", "800"))
+
 CFG = RetrievalConfig()
 
 # --- Entity canonicalization (add this) ---
@@ -112,6 +121,7 @@ ENT_CANON_MAP = {
     "orangie web 3": "Orangie",
     "@orangieweb3": "Orangie",
     "orangey web3 channel": "Orangie",
+    "anzo": "Anza",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

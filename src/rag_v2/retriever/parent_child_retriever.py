@@ -189,6 +189,7 @@ class ParentChildRetrieverV2:
 
         boosted_list = []
         q_lc = query.lower()
+        q_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", q_lc))
 
         for nws in nodes:
             md = nws.node.metadata or {}
@@ -213,6 +214,14 @@ class ParentChildRetrieverV2:
             # streams bias
             if "stream" in (md.get("document_type") or "") and any(k in q_lc for k in ["live", "yesterday", "stream", "@"]):
                 s = apply_multiplier(s, streams_mult)
+
+            # parent topic summary overlap (light boost)
+            if getattr(CFG, "enable_summary_boost", True):
+                summ = (md.get("parent_topic_summary") or "").lower()
+                if summ:
+                    s_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", summ))
+                    if q_tokens and (q_tokens & s_tokens):
+                        s = apply_multiplier(s, float(getattr(CFG, "summary_boost_mult", 1.05)))
 
             nws.score = s
             boosted_list.append(

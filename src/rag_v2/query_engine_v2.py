@@ -659,6 +659,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                 "speaker": md.get("speaker"),
                                 "channel_name": md.get("channel_name"),
                                 "parent_channel_name": md.get("parent_channel_name"),
+                                "parent_topic_summary": md.get("parent_topic_summary"),
                                 "node_type": md.get("node_type") or md.get("document_type"),
                                 "router_boost": md.get("router_boost"),
                                 "is_explainer": md.get("is_explainer"),
@@ -687,6 +688,28 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             rescored = blended
                             trace["ce_entity_blend"] = blend_debug
                             trace["entity_overlap_weight"] = weight
+                        # summary overlap blend
+                        alpha = float(getattr(CFG, "summary_rerank_alpha_def", 0.2)) if wants_definition(q) else float(getattr(CFG, "summary_rerank_alpha_default", 0.05))
+                        if alpha > 0:
+                            q_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", q.lower()))
+                            blended2: List[Tuple[str, str, float]] = []
+                            blend_dbg: List[Dict[str, Any]] = []
+                            for sid, text, sc in rescored:
+                                meta = metas.get(sid) or {}
+                                summ = (meta.get("parent_topic_summary") or "").lower()
+                                s_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", summ)) if summ else set()
+                                overlap = (len(q_tokens & s_tokens) / max(1, len(q_tokens))) if (q_tokens and s_tokens) else 0.0
+                                blended_score = (1.0 - alpha) * float(sc) + alpha * overlap
+                                blended2.append((sid, text, blended_score))
+                                blend_dbg.append({
+                                    "segment_id": sid,
+                                    "ce_in": float(sc),
+                                    "summary_overlap": round(overlap, 4),
+                                    "alpha": alpha,
+                                    "blended": round(blended_score, 4),
+                                })
+                            rescored = blended2
+                            trace["ce_summary_blend"] = blend_dbg
                         nodes = self._reinject_scores(nodes, rescored)
 
                         ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
@@ -820,6 +843,34 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 summary["total_ms"],
             )
             return Response("No results found.", source_nodes=[])
+
+        # Optionally prepend parent summaries as additional context
+        if getattr(CFG, "enable_parent_summary_context", True):
+            summaries = []
+            seen = set()
+            max_chars = int(getattr(CFG, "summary_max_len_chars", 600))
+            cap_tokens = int(getattr(CFG, "summary_context_token_cap", 800))
+            used_tokens = 0
+            for n in nodes:
+                md = n.node.metadata or {}
+                title = md.get("title") or md.get("parent_title")
+                summ = md.get("parent_topic_summary")
+                if not summ or not title:
+                    continue
+                key = (title, summ)
+                if key in seen:
+                    continue
+                seen.add(key)
+                text = f"• {title}: {str(summ)[:max_chars]}"
+                t = max(1, len(text) // 4)
+                if used_tokens + t > cap_tokens:
+                    break
+                summaries.append(text)
+                used_tokens += t
+            if summaries and nodes:
+                preface = "Parent summaries:\n" + "\n".join(summaries) + "\n\n"
+                nodes[0].node.text = preface + nodes[0].node.get_content()
+                progress.metadata["parent_summaries_included"] = len(summaries)
 
         with progress.step("synthesize", "Writing final answer (LLM synthesis)") as synth_step:
             resp = self._synthesize_clean(query_bundle, nodes)
