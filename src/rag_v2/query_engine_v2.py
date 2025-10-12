@@ -577,6 +577,57 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     )
                     return Response(CFG.abort_message, source_nodes=[])
 
+            max_post_boost = max((float(n.score or 0.0) for n in nodes), default=0.0)
+            trace["post_boost_max_score"] = max_post_boost
+            progress.metadata["post_boost_max_score"] = max_post_boost
+            if max_post_boost < CFG.post_boost_hard_min:
+                self._last_abort_details = {
+                    "stage": "retrieve",
+                    "reason": "post_boost_low",
+                    "max_score": max_post_boost,
+                    "threshold": CFG.post_boost_hard_min,
+                }
+                progress.add_event(
+                    "rerank_cross_encoder",
+                    status="skipped",
+                    label="Re-scoring sources (cross-encoder rerank)",
+                    metadata={"reason": "post_boost_low", "max_score": max_post_boost},
+                )
+                progress.add_event(
+                    "review_docs",
+                    status="skipped",
+                    label="Cleaning and enriching notes (post-processing pipeline)",
+                    metadata={"reason": "post_boost_low"},
+                )
+                progress.add_event(
+                    "stitch",
+                    status="skipped",
+                    label="Merging adjacent clips (temporal stitching)",
+                    metadata={"reason": "post_boost_low"},
+                )
+                progress.add_event(
+                    "synthesize",
+                    status="skipped",
+                    label="Writing final answer (LLM synthesis)",
+                    metadata={"reason": "post_boost_low"},
+                )
+                progress.add_event(
+                    "validate_answer",
+                    status="not_implemented",
+                    label="Final validation step (post-answer checks)",
+                )
+                trace["final_kept"] = []
+                trace["final_text"] = CFG.abort_message
+                summary = self._finalize_trace(trace, progress)
+                log.info(
+                    "qe[post-boost-low] [%s] q='%s' max=%.4f<th=%.4f",
+                    summary["request_id"],
+                    q,
+                    max_post_boost,
+                    CFG.post_boost_hard_min,
+                )
+                return Response(CFG.abort_message, source_nodes=[])
+
             early = self._maybe_early_abort_stage1(q, nodes)
             if early:
                 if self._last_abort_details:

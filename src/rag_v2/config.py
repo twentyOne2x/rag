@@ -61,6 +61,7 @@ class RetrievalConfig:
     stage1_top_min: float = float(os.getenv("STAGE1_TOP_MIN", "0.02"))
     stage1_hard_min: float = float(os.getenv("STAGE1_HARD_MIN", "0.05"))
     stage1_min_relevant: int = int(os.getenv("STAGE1_MIN_RELEVANT", "1"))
+    post_boost_hard_min: float = float(os.getenv("POST_BOOST_HARD_MIN", "0.12"))
     # Post-CE gate (uses sigmoid-normalized CE scores; lower than ce_abs_min)
     ce_max_norm_min: float = float(os.getenv("CE_MAX_NORM_MIN", "0.28"))
     abort_message: str = os.getenv(
