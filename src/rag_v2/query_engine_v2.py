@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set
+import time
 
 from llama_index.core.base.base_query_engine import BaseQueryEngine
 from llama_index.core.base.response.schema import RESPONSE_TYPE, Response
@@ -665,7 +666,33 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                 "is_explainer": md.get("is_explainer"),
                             }
 
-                        rescored = self._ce.rerank_with_meta(q, packs, metas)
+                        # Fine-grained progress ticks per CE batch
+                        total = len(packs)
+                        batch_size = int(getattr(self._ce, "batch_size", 32) or 32)
+                        rescored_chunks: List[Tuple[str, str, float]] = []
+                        last_tick = 0.0
+                        tick_min_ms = 0.25  # seconds
+                        for i in range(0, total, batch_size):
+                            chunk = packs[i : i + batch_size]
+                            rescored_part = self._ce.rerank_with_meta(q, chunk, metas)
+                            rescored_chunks.extend(rescored_part)
+                            # emit in-progress tick
+                            now = time.perf_counter()
+                            if now - last_tick >= tick_min_ms:
+                                processed = min(i + len(chunk), total)
+                                progress.add_event(
+                                    "rerank_cross_encoder",
+                                    status="in_progress",
+                                    label="Re-scoring sources (cross-encoder rerank)",
+                                    metadata={
+                                        "processed": processed,
+                                        "total": total,
+                                        "percent": round(processed / max(1, total), 4),
+                                    },
+                                )
+                                last_tick = now
+
+                        rescored = rescored_chunks
                         trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
                         if required_entities:
                             weight = float(getattr(CFG, "entity_overlap_weight", 0.4))
