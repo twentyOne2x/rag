@@ -102,6 +102,15 @@ ENT_CANON_MAP = {
     "binance": "Binance",
     "$bnb": "BNB",
     "bnb": "BNB",
+    "orangie": "Orangie",
+    "orangy": "Orangie",
+    "orangey": "Orangie",
+    "orangey web3": "Orangie",
+    "orangie web3": "Orangie",
+    "orangey web 3": "Orangie",
+    "orangie web 3": "Orangie",
+    "@orangieweb3": "Orangie",
+    "orangey web3 channel": "Orangie",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

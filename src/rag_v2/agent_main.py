@@ -88,6 +88,18 @@ if __name__ == "__main__":
         # "In the video where Cooker talks to Threadguy about Aster, did Cooker call the fact that Threadguy will soon interview CZ, the CEO of Binance?",
         # "who's cupsey?",
 
+
+
+        # "what's aster?",
+        # "who's cookerflips?",
+        # "what's alpenglow?",
+        # "what's firedancer?",
+        # "return all videos about firedancer",
+        # "return all videos from Anza",
+        # "how much money has been raised on solana DATs and where will it be deployed in defi?",
+        # "what is the first and most recent mention of firedancer?"
+
+
         "什么是 Aster？",                               # What's Aster?
         "谁是 Cookerflips？",                          # Who is Cookerflips?
         "什么是 Alpenglow？",                          # What's Alpenglow?
@@ -103,15 +115,6 @@ if __name__ == "__main__":
         "列出最近一个月关于 Solana MEV/订单流 的要点与出处",     # Summarize last-month highlights on Solana MEV/orderflow with sources
         "返回所有关于 Pump.fun 与公平发行模因币 的视频",        # Return all videos about Pump.fun and fair-launch memecoins
 
-
-        # "what's aster?",
-        # "who's cookerflips?",
-        # "what's alpenglow?",
-        # "what's firedancer?",
-        # "return all videos about firedancer",
-        # "return all videos from Anza",
-        # "how much money has been raised on solana DATs and where will it be deployed in defi?",
-        # "what is the first and most recent mention of firedancer?"
     ]
 
     for i, q in enumerate(questions, 1):

@@ -464,14 +464,14 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         if callable(retriever_query_entities):
             try:
                 _, _, canonical = retriever_query_entities(q)
-                if canonical and len(canonical) >= 2:
+                if canonical:
                     required_entities = set(canonical)
             except Exception:
                 required_entities = set()
         set_entity_requirements = getattr(self._retriever, "set_entity_requirements", None)
         if callable(set_entity_requirements):
             try:
-                set_entity_requirements(required_entities if len(required_entities) >= 2 else None)
+                set_entity_requirements(required_entities if required_entities else None)
             except Exception:
                 pass
         if required_entities:

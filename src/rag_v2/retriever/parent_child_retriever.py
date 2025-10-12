@@ -435,7 +435,7 @@ class ParentChildRetrieverV2:
         neighbors_sorted = sorted(neighbors, key=lambda n: (n.score or 0.0), reverse=True)
         neighbors_topn = neighbors_sorted[: CFG.stage1_topn]
         required_entities = self._entity_requirements
-        if not required_entities and len(qents_canonical) >= 2:
+        if not required_entities and qents_canonical:
             required_entities = qents_canonical
         entity_gate_dbg = {"required": [], "applied": False, "kept": len(neighbors_topn), "dropped": 0}
         if required_entities:
