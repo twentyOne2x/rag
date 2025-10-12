@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 import re
 
-from ..config import CFG
+from ..config import CFG, ENT_CANON_MAP
 from ..router.video_router import TICKER_RE, HANDLE_RE, wants_definition
-from ..postprocessors.entity_utils import canon_entity
+from ..postprocessors.entity_utils import canon_entity, canon_entities
 from ..utils.scoring import recency_decay, apply_multiplier
 from ..logging_utils import setup_logger, node_brief, _clean_title
 from ..vector_store.parent_resolver import fetch_parent_meta
@@ -20,6 +20,7 @@ class ParentChildRetrieverV2:
         self.base = base_retriever
         self._last_debug: Dict[str, Any] = {}
         self._channel_filter: Optional[Dict[str, List[str]]] = None
+        self._entity_requirements: Optional[Set[str]] = None
 
     def debug_snapshot(self) -> Dict[str, Any]:
         return dict(self._last_debug) if self._last_debug else {}
@@ -33,18 +34,30 @@ class ParentChildRetrieverV2:
             or str(id(nws))
         )
 
-    def _query_entities(self, q: str) -> Tuple[set, set]:
+    def _query_entities(self, q: str) -> Tuple[set, set, Set[str]]:
         """
         Extract $tickers/@handles plus canonical Solana nouns (Firedancer/Anza/Alpenglow/Aster).
         Returns:
           - all_forms: for metadata filter ($UPPER/@lower/Mixed + lc + title-case)
           - lc_forms: lowercase forms for overlap math
+          - canonical_set: deduped canonical entity names
         """
         raw = set(m.group(0).strip() for m in TICKER_RE.finditer(q))
         raw |= set(m.group(0).strip() for m in HANDLE_RE.finditer(q))
         for tok in re.findall(r"[A-Za-z][A-Za-z0-9._-]{2,}", q):
             ce = canon_entity(tok)
-            if ce:
+            if not ce:
+                continue
+            if tok.startswith("@"):  # already handled
+                raw.add(ce)
+                continue
+            lower_tok = tok.strip().lower()
+            if lower_tok in ENT_CANON_MAP or ce != tok:
+                raw.add(ce)
+        for tok in re.findall(r"\b[A-Z]{2,}\b", q):
+            ce = canon_entity(tok)
+            lower_tok = tok.lower()
+            if lower_tok in ENT_CANON_MAP or ce != tok:
                 raw.add(ce)
         all_forms = set()
         for e in raw:
@@ -54,7 +67,8 @@ class ParentChildRetrieverV2:
                 all_forms.add(e.lower())
             else:
                 all_forms.update({e, e.lower(), e.title()})
-        return all_forms, {x.lower() for x in all_forms if not x.startswith("$")}
+        canonical = set(canon_entities(raw))
+        return all_forms, {x.lower() for x in all_forms if not x.startswith("$")}, canonical
 
     def set_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> None:
         if not channel_filter:
@@ -66,6 +80,11 @@ class ParentChildRetrieverV2:
                 continue
             copied[key] = list(values)
         self._channel_filter = copied or None
+    def set_entity_requirements(self, required: Optional[Set[str]]) -> None:
+        if required:
+            self._entity_requirements = {str(r) for r in required if r}
+        else:
+            self._entity_requirements = None
 
     @staticmethod
     def _dedupe_clean(values: Optional[List[str]]) -> List[str]:
@@ -207,6 +226,53 @@ class ParentChildRetrieverV2:
             )
         return nodes, boosted_list
 
+    @staticmethod
+    def _canonical_entities_from_metadata(md: Dict[str, Any]) -> Set[str]:
+        out: Set[str] = set()
+        for source in ("canonical_entities", "entities"):
+            for ent in md.get(source) or []:
+                ce = canon_entity(ent)
+                if ce:
+                    out.add(ce)
+        speaker = md.get("speaker")
+        if speaker:
+            ce = canon_entity(speaker)
+            if ce:
+                out.add(ce)
+        channel = md.get("channel_name") or md.get("parent_channel_name")
+        if channel:
+            ce = canon_entity(channel)
+            if ce:
+                out.add(ce)
+        return out
+
+    def _entity_gate_nodes(self, nodes: List[Any], required: Set[str]) -> Tuple[List[Any], Dict[str, Any]]:
+        debug = {
+            "required": sorted(required),
+            "applied": bool(required),
+            "kept": 0,
+            "dropped": 0,
+            "dropped_samples": [],
+        }
+        if not required:
+            return nodes, debug
+        kept: List[Any] = []
+        dropped_meta: List[Dict[str, Any]] = []
+        for n in nodes:
+            md = n.node.metadata or {}
+            ents = self._canonical_entities_from_metadata(md)
+            if required.issubset(ents):
+                kept.append(n)
+            else:
+                dropped_meta.append({
+                    "node": node_brief(n),
+                    "entities": sorted(ents),
+                })
+        debug["kept"] = len(kept)
+        debug["dropped"] = len(nodes) - len(kept)
+        debug["dropped_samples"] = dropped_meta[:5]
+        return kept, debug
+
     def _entity_filtered_retrieve(self, query_bundle, qents_all: set, extra_filter: Optional[Dict[str, Any]]):
         """Second pass with metadata filter; falls back silently if base doesn't support it."""
         if not qents_all:
@@ -253,7 +319,7 @@ class ParentChildRetrieverV2:
 
     def retrieve(self, query_bundle):
         q = query_bundle.query_str
-        qents_all, qents_lc = self._query_entities(q)
+        qents_all, qents_lc, qents_canonical = self._query_entities(q)
 
         channel_filter_expr, channel_filter_dbg = self._build_channel_filter(self._channel_filter)
         # channel filter is single-use per request; clear after capturing
@@ -368,6 +434,13 @@ class ParentChildRetrieverV2:
         # Pre-CE shortlist
         neighbors_sorted = sorted(neighbors, key=lambda n: (n.score or 0.0), reverse=True)
         neighbors_topn = neighbors_sorted[: CFG.stage1_topn]
+        required_entities = self._entity_requirements
+        if not required_entities and len(qents_canonical) >= 2:
+            required_entities = qents_canonical
+        entity_gate_dbg = {"required": [], "applied": False, "kept": len(neighbors_topn), "dropped": 0}
+        if required_entities:
+            neighbors_topn, entity_gate_dbg = self._entity_gate_nodes(neighbors_topn, required_entities)
+        self._entity_requirements = None
         channel_filter_dbg["final_candidates"] = len(neighbors_topn)
 
         # Debug snapshot
@@ -383,5 +456,6 @@ class ParentChildRetrieverV2:
             "after_metadata_boosts": boost_details,
             "neighbor_expansion": expanded_map,
             "pre_ce_topN": [node_brief(n) for n in neighbors_topn],
+            "entity_gate": entity_gate_dbg,
         }
         return neighbors_topn

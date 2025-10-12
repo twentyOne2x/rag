@@ -29,6 +29,7 @@ class RetrievalConfig:
     max_segments_per_parent: int = int(os.getenv("MAX_SEGMENTS_PER_PARENT", "8"))
     entity_filter_boost: float = float(os.getenv("ENTITY_FILTER_BOOST", "1.5"))
     entity_overlap_gain: float = float(os.getenv("ENTITY_OVERLAP_GAIN", "0.2"))
+    entity_overlap_weight: float = float(os.getenv("ENTITY_OVERLAP_WEIGHT", "0.4"))
 
     # stitching (merge adjacent child clips from same parent)
     stitch_gap_seconds: int = int(os.getenv("STITCH_GAP_SECONDS", "12"))
@@ -93,7 +94,14 @@ ENT_CANON_MAP = {
     "cupsy": "Cupsey",
     "haster": "Aster",
     "astro": "Astro",
+    "hyperliquid": "Hyperliquid",
     "hyper liquid": "Hyperliquid",
+    "cz": "Changpeng Zhao",
+    "changpeng": "Changpeng Zhao",
+    "changpeng zhao": "Changpeng Zhao",
+    "binance": "Binance",
+    "$bnb": "BNB",
+    "bnb": "BNB",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}

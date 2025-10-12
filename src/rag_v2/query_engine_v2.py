@@ -5,7 +5,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from llama_index.core.base.base_query_engine import BaseQueryEngine
 from llama_index.core.base.response.schema import RESPONSE_TYPE, Response
@@ -459,6 +459,24 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
         hints = dict(getattr(self, "_pending_hints", {}) or {})
 
+        required_entities: Set[str] = set()
+        retriever_query_entities = getattr(self._retriever, "_query_entities", None)
+        if callable(retriever_query_entities):
+            try:
+                _, _, canonical = retriever_query_entities(q)
+                if canonical and len(canonical) >= 2:
+                    required_entities = set(canonical)
+            except Exception:
+                required_entities = set()
+        set_entity_requirements = getattr(self._retriever, "set_entity_requirements", None)
+        if callable(set_entity_requirements):
+            try:
+                set_entity_requirements(required_entities if len(required_entities) >= 2 else None)
+            except Exception:
+                pass
+        if required_entities:
+            progress.metadata["required_entities"] = sorted(required_entities)
+
         # Optional hints the caller may provide (history, router scope, definition mode, etc.).
         history = hints.get("history")
         router_scope = hints.get("router_scope")
@@ -481,6 +499,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         trace["router_scope"] = router_scope
         trace["definition_mode"] = definition_mode
         trace["history_present"] = bool(history)
+        trace["required_entities"] = sorted(required_entities)
 
         self._last_abort_details = None
         nodes: List[NodeWithScore] = []
@@ -508,6 +527,55 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
             if hasattr(self._retriever, "debug_snapshot"):
                 trace.update(self._retriever.debug_snapshot())
+            gate_info = trace.get("entity_gate")
+            if gate_info:
+                progress.metadata["entity_gate"] = gate_info
+                if gate_info.get("applied") and gate_info.get("kept", 0) == 0:
+                    required = gate_info.get("required") or trace.get("required_entities") or []
+                    self._last_abort_details = {
+                        "stage": "retrieve",
+                        "reason": "entity_gate",
+                        "required_entities": required,
+                    }
+                    progress.add_event(
+                        "rerank_cross_encoder",
+                        status="skipped",
+                        label="Re-scoring sources (cross-encoder rerank)",
+                        metadata={"reason": "entity_gate", "required_entities": required},
+                    )
+                    progress.add_event(
+                        "review_docs",
+                        status="skipped",
+                        label="Cleaning and enriching notes (post-processing pipeline)",
+                        metadata={"reason": "entity_gate"},
+                    )
+                    progress.add_event(
+                        "stitch",
+                        status="skipped",
+                        label="Merging adjacent clips (temporal stitching)",
+                        metadata={"reason": "entity_gate"},
+                    )
+                    progress.add_event(
+                        "synthesize",
+                        status="skipped",
+                        label="Writing final answer (LLM synthesis)",
+                        metadata={"reason": "entity_gate"},
+                    )
+                    progress.add_event(
+                        "validate_answer",
+                        status="not_implemented",
+                        label="Final validation step (post-answer checks)",
+                    )
+                    trace["final_kept"] = []
+                    trace["final_text"] = CFG.abort_message
+                    summary = self._finalize_trace(trace, progress)
+                    log.info(
+                        "qe[entity-gate] [%s] q='%s' required=%s -> no matches",
+                        summary["request_id"],
+                        q,
+                        required,
+                    )
+                    return Response(CFG.abort_message, source_nodes=[])
 
             early = self._maybe_early_abort_stage1(q, nodes)
             if early:
@@ -537,6 +605,9 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             metas[sid] = {
                                 "entities": md.get("entities") or [],
                                 "canonical_entities": md.get("canonical_entities") or [],
+                                "speaker": md.get("speaker"),
+                                "channel_name": md.get("channel_name"),
+                                "parent_channel_name": md.get("parent_channel_name"),
                                 "node_type": md.get("node_type") or md.get("document_type"),
                                 "router_boost": md.get("router_boost"),
                                 "is_explainer": md.get("is_explainer"),
@@ -544,6 +615,27 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
                         rescored = self._ce.rerank_with_meta(q, packs, metas)
                         trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
+                        if required_entities:
+                            weight = float(getattr(CFG, "entity_overlap_weight", 0.4))
+                            blended: List[Tuple[str, str, float]] = []
+                            blend_debug: List[Dict[str, Any]] = []
+                            for sid, text, sc in rescored:
+                                meta = metas.get(sid) or {}
+                                ents = set()
+                                if hasattr(self._retriever, "_canonical_entities_from_metadata"):
+                                    ents = self._retriever._canonical_entities_from_metadata(meta)
+                                overlap = (len(required_entities & ents) / len(required_entities)) if required_entities else 0.0
+                                blended_score = (1.0 - weight) * float(sc) + weight * overlap
+                                blended.append((sid, text, blended_score))
+                                blend_debug.append({
+                                    "segment_id": sid,
+                                    "ce_raw": float(sc),
+                                    "overlap": round(overlap, 4),
+                                    "blended": round(blended_score, 4),
+                                })
+                            rescored = blended
+                            trace["ce_entity_blend"] = blend_debug
+                            trace["entity_overlap_weight"] = weight
                         nodes = self._reinject_scores(nodes, rescored)
 
                         ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
