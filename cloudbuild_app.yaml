@@ -57,7 +57,7 @@ steps:
     - --max-instances
     - "10"
     - --memory
-    - 4Gi
+    - 8Gi
     - --cpu
     - "2"
     - --set-env-vars
