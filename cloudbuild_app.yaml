@@ -55,7 +55,7 @@ steps:
     - --min-instances
     - "1"
     - --max-instances
-    - "10"
+    - "5"
     - --memory
     - 8Gi
     - --cpu
