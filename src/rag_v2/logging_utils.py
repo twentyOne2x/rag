@@ -219,14 +219,11 @@ def _format_timestamp_range(start_hms: str | None, end_hms: str | None) -> str:
     return ""
 
 def _excerpt_edges(txt: str, n_words: int = 12) -> str:
-    if not txt:
-        return ""
-    words = re.findall(r"\S+", txt)
-    if len(words) <= n_words * 2:
-        return " ".join(words)
-    start = " ".join(words[:n_words])
-    end = " ".join(words[-n_words:])
-    return f"{start} … {end}"
+    """
+    Return the full excerpt that was fed to the LLM for this node.
+    This affects display only; it does not change model inputs.
+    """
+    return txt or ""
 
 def _node_meta_and_score(node_like):
     score = getattr(node_like, "score", None)

@@ -32,9 +32,9 @@ class RetrievalConfig:
     entity_overlap_weight: float = float(os.getenv("ENTITY_OVERLAP_WEIGHT", "0.4"))
 
     # stitching (merge adjacent child clips from same parent)
-    stitch_gap_seconds: int = int(os.getenv("STITCH_GAP_SECONDS", "12"))
-    stitch_target_tokens: int = int(os.getenv("STITCH_TARGET_TOKENS", "360"))
-    stitch_max_merge: int = int(os.getenv("STITCH_MAX_MERGE", "3"))
+    stitch_gap_seconds: int = int(os.getenv("STITCH_GAP_SECONDS", "20"))
+    stitch_target_tokens: int = int(os.getenv("STITCH_TARGET_TOKENS", "540"))
+    stitch_max_merge: int = int(os.getenv("STITCH_MAX_MERGE", "5"))
 
     # output quoting
     quote_min_count: int = int(os.getenv("QUOTE_MIN_COUNT", "4"))
