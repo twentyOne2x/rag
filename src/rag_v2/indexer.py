@@ -12,12 +12,30 @@ import logging
 import os
 import time
 from functools import wraps
+from pathlib import Path
 from typing import Iterable, Optional
 
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
+
+# Load local dotenv when not running on Cloud Run ---------------------------------
+
+if not os.environ.get("K_SERVICE"):
+    try:
+        from dotenv import find_dotenv, load_dotenv  # type: ignore
+
+        env_path = find_dotenv(usecwd=True)
+        if env_path:
+            load_dotenv(env_path, override=False)
+        for extra in (".env", ".env.local"):
+            path = Path.cwd() / extra
+            if path.exists():
+                load_dotenv(path, override=False)
+    except Exception:
+        # dotenv is optional; ignore if unavailable
+        pass
 
 # Default configuration -----------------------------------------------------
 
