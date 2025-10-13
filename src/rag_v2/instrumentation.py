@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .telemetry.cache import DiagnosticsCache
+from .telemetry import DiagnosticsCache, TelemetryHistogram
 
 
 def _now_iso() -> str:
@@ -168,6 +168,7 @@ class AppDiagnostics:
     telemetry_cache: DiagnosticsCache = DiagnosticsCache(
         capacity=int(os.getenv("RAG_TELEMETRY_CACHE_SIZE", "200"))
     )
+    telemetry_histogram: TelemetryHistogram = TelemetryHistogram()
 
     @classmethod
     def record_startup(cls, profile: Dict[str, Any]) -> None:
@@ -189,6 +190,7 @@ class AppDiagnostics:
     @classmethod
     def record_telemetry(cls, summary: Dict[str, Any]) -> None:
         cls.last_telemetry_summary = summary
+        cls.telemetry_histogram.update(summary)
 
     @classmethod
     def get_last_telemetry(cls) -> Optional[Dict[str, Any]]:
@@ -197,3 +199,7 @@ class AppDiagnostics:
     @classmethod
     def recent_traces(cls) -> List[Dict[str, Any]]:
         return cls.telemetry_cache.snapshot()
+
+    @classmethod
+    def telemetry_snapshot(cls) -> Dict[str, Any]:
+        return cls.telemetry_histogram.snapshot()

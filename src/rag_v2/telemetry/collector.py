@@ -66,11 +66,18 @@ class TelemetryCollector:
         counts: Dict[str, int] = {}
         totals: Dict[str, float] = {}
         maximums: Dict[str, float] = {}
+        minimums: Dict[str, float] = {}
+        sum_squares: Dict[str, float] = {}
 
         for evt in events_copy:
             counts[evt.stage] = counts.get(evt.stage, 0) + 1
             totals[evt.stage] = totals.get(evt.stage, 0.0) + float(evt.duration_ms)
             maximums[evt.stage] = max(maximums.get(evt.stage, 0.0), float(evt.duration_ms))
+            existing_min = minimums.get(evt.stage)
+            duration = float(evt.duration_ms)
+            if existing_min is None or duration < existing_min:
+                minimums[evt.stage] = duration
+            sum_squares[evt.stage] = sum_squares.get(evt.stage, 0.0) + (duration * duration)
 
         summary = {
             "service_name": self.service_name,
@@ -78,6 +85,8 @@ class TelemetryCollector:
             "counts": counts,
             "totals_ms": totals,
             "max_ms": maximums,
+            "min_ms": minimums,
+            "sum_squares": sum_squares,
             "event_count": len(events_copy),
         }
 

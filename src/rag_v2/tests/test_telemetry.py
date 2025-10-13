@@ -8,6 +8,7 @@ from pathlib import Path
 from rag_v2.telemetry.collector import TelemetryCollector, TelemetryEvent
 from rag_v2.telemetry.cache import DiagnosticsCache
 from rag_v2.telemetry.writer import JsonlTelemetryWriter
+from rag_v2.telemetry.aggregator import TelemetryHistogram
 
 
 class TelemetryTests(unittest.TestCase):
@@ -27,6 +28,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertAlmostEqual(summary["totals_ms"]["retrieve"], 150.0)
         self.assertAlmostEqual(summary["max_ms"]["retrieve"], 100.0)
         self.assertAlmostEqual(summary["max_ms"]["synthesize"], 200.0)
+        self.assertAlmostEqual(summary["min_ms"]["retrieve"], 50.0)
+        self.assertAlmostEqual(summary["sum_squares"]["retrieve"], (100.0 ** 2) + (50.0 ** 2))
         self.assertEqual(collector.events[0].metadata["k"], "v")
 
     def test_writer_persists_jsonl(self) -> None:
@@ -60,6 +63,35 @@ class TelemetryTests(unittest.TestCase):
 
         cache.clear()
         self.assertEqual(cache.snapshot(), [])
+
+    def test_histogram_accumulates_multiple_summaries(self) -> None:
+        hist = TelemetryHistogram()
+
+        first = {
+            "counts": {"retrieve": 2, "synthesize": 1},
+            "totals_ms": {"retrieve": 150.0, "synthesize": 200.0},
+            "max_ms": {"retrieve": 100.0, "synthesize": 200.0},
+            "min_ms": {"retrieve": 50.0, "synthesize": 200.0},
+            "sum_squares": {"retrieve": (100.0 ** 2) + (50.0 ** 2), "synthesize": 200.0 ** 2},
+        }
+        second = {
+            "counts": {"retrieve": 1},
+            "totals_ms": {"retrieve": 120.0},
+            "max_ms": {"retrieve": 120.0},
+            "min_ms": {"retrieve": 120.0},
+            "sum_squares": {"retrieve": 120.0 ** 2},
+        }
+
+        hist.update(first)
+        hist.update(second)
+
+        snapshot = hist.snapshot()
+        self.assertEqual(snapshot["requests"], 2)
+        retrieve_stats = snapshot["stages"]["retrieve"]
+        self.assertEqual(retrieve_stats["count"], 3)
+        self.assertAlmostEqual(retrieve_stats["max_ms"], 120.0)
+        self.assertAlmostEqual(retrieve_stats["min_ms"], 50.0)
+        self.assertAlmostEqual(retrieve_stats["avg_ms"], round((150.0 + 120.0) / 3, 2))
 
 
 if __name__ == "__main__":

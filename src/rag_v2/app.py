@@ -86,6 +86,7 @@ def healthz():
         "request_id": startup.get("request_id"),
     }
     telemetry = AppDiagnostics.get_last_telemetry() or {}
+    telemetry_histogram = AppDiagnostics.telemetry_snapshot()
     recent = [
         {
             "request_id": trace.get("request_id"),
@@ -94,7 +95,13 @@ def healthz():
         }
         for trace in AppDiagnostics.recent_traces()[-5:]
     ]
-    return {"ok": True, "startup": summary, "telemetry": telemetry, "recent_queries": recent}
+    return {
+        "ok": True,
+        "startup": summary,
+        "telemetry": telemetry,
+        "telemetry_histogram": telemetry_histogram,
+        "recent_queries": recent,
+    }
 
 @app.post("/chat", response_model=ChatResp)
 async def chat(req: ChatReq):
