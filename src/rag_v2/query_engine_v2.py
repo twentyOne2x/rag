@@ -133,12 +133,21 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         for n in nodes:
             view = node_brief(n)
             md = n.node.metadata or {}
+            start_hms = md.get("start_hms")
+            start_seconds = self._hms_to_seconds(start_hms) if start_hms else None
+            video_id = md.get("parent_id") or md.get("video_id")
             view.update(
                 {
                     "url": md.get("clip_url") or md.get("url"),
+                    "clip_url": md.get("clip_url") or md.get("url"),
                     "title": md.get("title"),
                     "channel_name": md.get("channel_name"),
                     "channel_id": md.get("channel_id"),
+                    "parent_id": video_id,
+                    "video_id": video_id,
+                    "start_hms": start_hms,
+                    "end_hms": md.get("end_hms"),
+                    "start_seconds": start_seconds,
                 }
             )
             out.append(view)
