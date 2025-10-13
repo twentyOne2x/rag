@@ -720,10 +720,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             now = time.perf_counter()
                             if now - last_tick >= tick_min_ms:
                                 processed = min(i + len(chunk), total)
+                                label_suffix = f"{processed}/{total}" if total else f"{processed}"
                                 progress.add_event(
                                     "rerank_cross_encoder",
                                     status="in_progress",
-                                    label="Re-scoring sources (cross-encoder rerank)",
+                                    label=f"Re-scoring sources (cross-encoder rerank) [{label_suffix}]",
                                     metadata={
                                         "processed": processed,
                                         "total": total,
