@@ -66,7 +66,7 @@ class RetrievalConfig:
     ce_max_norm_min: float = float(os.getenv("CE_MAX_NORM_MIN", "0.28"))
     abort_message: str = os.getenv(
         "ABORT_MESSAGE",
-        "I don’t know based on the sources I can search."
+        "I don’t have enough high-quality clips to answer that right now."
     )
     # NEW: require at least one entity hit for definition-style queries
     def_require_entity_hit: bool = os.getenv("DEF_REQUIRE_ENTITY_HIT", "1") in ("1", "true", "yes")
