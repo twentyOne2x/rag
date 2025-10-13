@@ -14,6 +14,7 @@ except Exception:
 
 # --- add near the top of logging_utils.py ---
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from .postprocessors.entity_utils import normalize_text_entities
 
 def _is_video(meta: dict) -> bool:
     dt = (meta.get("document_type") or "").lower()
@@ -107,6 +108,8 @@ def _json_default(o: Any):
 def node_brief(nws) -> Dict[str, Any]:
     md = (getattr(nws, "node", None) and getattr(nws.node, "metadata", None)) or {}
     text = (getattr(nws, "node", None) and getattr(nws.node, "get_content", None) and nws.node.get_content()) or ""
+    if text:
+        text = normalize_text_entities(text)
     return {
         "segment_id": md.get("segment_id") or md.get("id") or getattr(nws.node, "node_id", None),
         "parent_id": md.get("parent_id") or md.get("video_id"),
@@ -233,6 +236,8 @@ def _node_meta_and_score(node_like):
     else:
         meta = getattr(node_like, "metadata", {}) or {}
         text = getattr(node_like, "text", "") or ""
+    if text:
+        text = normalize_text_entities(text)
     return meta, score, text
 
 

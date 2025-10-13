@@ -178,9 +178,38 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if spk:
                 hms = " - ".join(filter(None, [md.get("start_hms"), md.get("end_hms")]))
                 # mutate text once per final node
-                n.node.text = f"[{spk}{' | ' + hms if hms else ''}] " + n.node.get_content()
+                prefixed = f"[{spk}{' | ' + hms if hms else ''}] " + n.node.get_content()
+                n.node.text = normalize_text_entities(prefixed)
             out.append(n)
         return out
+
+    @staticmethod
+    def _normalize_node_entities(nodes):
+        if not nodes:
+            return nodes
+        for item in nodes:
+            node = getattr(item, "node", None) or item
+            if node is None:
+                continue
+            text = None
+            if hasattr(node, "get_content"):
+                try:
+                    text = node.get_content()
+                except Exception:
+                    text = getattr(node, "text", None)
+            else:
+                text = getattr(node, "text", None)
+            if not text:
+                continue
+            cleaned = normalize_text_entities(text)
+            if hasattr(node, "text"):
+                node.text = cleaned
+            elif hasattr(node, "set_content"):
+                try:
+                    node.set_content(cleaned)
+                except Exception:
+                    pass
+        return nodes
 
     def _synthesize_clean(self, query_bundle: QueryBundle, nodes: List[NodeWithScore]) -> Response:
         raw = self._core._response_synthesizer.synthesize(query=query_bundle, nodes=nodes)
@@ -188,9 +217,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             cleaned_text = clean_model_refs(str(raw))
             # NEW: Apply final entity normalization to the answer
             cleaned_text = normalize_text_entities(cleaned_text)
+            self._normalize_node_entities(nodes)
 
             # prefer whatever the synthesizer returned for source_nodes; else fall back to our `nodes`
             src_nodes = getattr(raw, "source_nodes", None) or nodes
+            self._normalize_node_entities(src_nodes)
             final_text = append_sources_block(cleaned_text, src_nodes)
 
             if hasattr(raw, "response"):
@@ -993,11 +1024,16 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         try:
             cleaned = clean_model_refs(str(raw))
             cleaned = normalize_text_entities(cleaned)
+            self._normalize_node_entities(nodes)
+            source_nodes = getattr(raw, "source_nodes", None) or nodes
+            self._normalize_node_entities(source_nodes)
             if hasattr(raw, "response"):
                 raw.response = cleaned
+                if not getattr(raw, "source_nodes", None):
+                    raw.source_nodes = source_nodes
                 resp = raw
             else:
-                resp = Response(cleaned, source_nodes=getattr(raw, "source_nodes", nodes))
+                resp = Response(cleaned, source_nodes=source_nodes)
         except Exception:
             resp = raw
 
