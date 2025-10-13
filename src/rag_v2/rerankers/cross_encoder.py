@@ -55,16 +55,32 @@ def _age_days(date_str: str | None) -> int | None:
 
 class CEReranker:
     def __init__(self, model_name: str = "BAAI/bge-reranker-large", batch_size: int = 32):
+        # Lazy model load to avoid cold-start timeouts
         self.enabled = CrossEncoder is not None
         self.batch = batch_size
-        self.model = CrossEncoder(model_name) if self.enabled else None
+        self._model_name = model_name
+        self.model = None  # type: ignore
         self._cache: Dict[str, float] = {}
+
+    def _ensure_model(self) -> bool:
+        if not self.enabled:
+            return False
+        if self.model is not None:
+            return True
+        try:
+            self.model = CrossEncoder(self._model_name)  # type: ignore
+            return True
+        except Exception:
+            # disable CE on failure to load
+            self.enabled = False
+            self.model = None
+            return False
 
     def _h(self, q: str, sid: str) -> str:
         return hashlib.sha1(f"{q}::{sid}".encode("utf-8")).hexdigest()
 
     def rerank(self, query: str, items: List[Tuple[str, str, float]]) -> List[Tuple[str, str, float]]:
-        if not self.enabled or not items:
+        if not items or not self._ensure_model():
             return items
         pairs, keys = [], []
         for sid, text, _ in items:
@@ -74,7 +90,7 @@ class CEReranker:
                 continue
             pairs.append((query, text))
         if pairs:
-            scores = self.model.predict(pairs, batch_size=self.batch)
+            scores = self.model.predict(pairs, batch_size=self.batch)  # type: ignore
             for k, sc in zip([k for k in keys if k not in self._cache], scores):
                 self._cache[k] = float(sc)
         rescored = []
