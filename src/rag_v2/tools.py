@@ -63,7 +63,7 @@ def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
         query
         + "\n\n"
         + "Answer thoroughly using multiple distinct passages. "
-        f"Quote ≥{CFG.quote_min_count} short excerpts verbatim and include each clip's timestamp range in parentheses. "
+        f"Provide ≥{CFG.quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
         + cite_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
