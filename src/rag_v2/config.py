@@ -122,6 +122,7 @@ ENT_CANON_MAP = {
     "@orangieweb3": "Orangie",
     "orangey web3 channel": "Orangie",
     "anzo": "Anza",
+    "Helios": "Helius",
 }
 # Normalize keys to lowercase for lookups
 ENT_CANON_MAP = {k.lower(): v for k, v in ENT_CANON_MAP.items()}
