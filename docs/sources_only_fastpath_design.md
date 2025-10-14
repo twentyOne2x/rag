@@ -123,6 +123,34 @@ retrieve → (optional entity gate) → [sources-only?] ─┬→ Fast Path
   4. Record coverage of returned sources (precision/recall vs ground truth when available).
 - Use results to tune thresholds before GA.
 
+### 3.7 Adaptive Node Budget (Optional Enhancement)
+
+- **Current state**  
+  - Stage-1 retriever pulls up to `CFG.stage1_topn = 240` nodes per request.  
+  - CE rerank processes all surviving nodes (typically 180–240 after gating).  
+  - Post-CE keep policy trims to at least `CFG.ce_min_keep = 20`, then `_final_k` caps LLM inputs to `CFG.max_final_nodes = 12`.  
+  - Result: cross-encoder work scales with 240 candidates even for simple list queries; synthesis always sees ≤12 segments.
+
+- **Improvement**  
+  - Introduce `estimate_question_complexity(query)` returning one of `{low, medium, high}` using heuristics (token length, entity count, presence of multi-hop cues).  
+  - Map complexity to `stage1_topn` / `topk_post_rerank` budgets: e.g.,
+    | Complexity | Stage1 Limit | CE Limit | Final Nodes |
+    |------------|--------------|----------|-------------|
+    | low        | 80           | 20       | 8           |
+    | medium     | 160          | 30       | 10          |
+    | high       | 240          | 40       | 12          |
+  - Expose override via progress metadata for monitoring (`"node_budget": {"complexity": "low", "stage1": 80, ...}`).
+  - Fast path can reuse the same complexity score to decide whether CE is needed (skip for `low` + `sources_only`).
+
+- **Why**  
+  - Reduces CE CPU/GPU cost by 60–70% on trivial prompts.  
+  - Aligns with state-of-the-art retrieval stacks (OpenAI Answers, Bing) that dynamically size candidate pools based on intent difficulty rather than fixed top-k.
+
+- **Implementation notes**  
+  - Add helper near `_final_k` or router layer.  
+  - Record complexity decision in telemetry histogram for validation.  
+  - Fallback to max values when heuristics are uncertain or telemetry flags high miss rate.
+
 ---
 
 ## 4. Detailed Plan
@@ -139,8 +167,9 @@ retrieve → (optional entity gate) → [sources-only?] ─┬→ Fast Path
 | [ ] 6 | Node canonical metadata cache |  |  |
 | [ ] 7 | Telemetry updates (`workflow_select`, histogram fields) |  |  |
 | [ ] 8 | Unit tests + integration scenarios |  |  |
-| [ ] 9 | AI evaluator harness + baseline comparison |  |  |
-| [ ] 10 | Rollout script / feature flag management |  |  |
+| [ ] 9 | Adaptive node budget heuristics (stage1/CE scaling) |  |  |
+| [ ] 10 | AI evaluator harness + baseline comparison |  |  |
+| [ ] 11 | Rollout script / feature flag management |  |  |
 
 ### 4.2 Expected Code Touchpoints
 
@@ -151,6 +180,7 @@ retrieve → (optional entity gate) → [sources-only?] ─┬→ Fast Path
 - `src/rag_v2/app.py` (expose mode in diagnostics)
 - `src/rag_v2/tests/...` (unit/integration)
 - New `scripts/eval_sources_fast_path.py` for evaluator harness.
+- Optional: `src/rag_v2/router/complexity.py` for node-budget heuristics.
 
 ---
 
@@ -163,9 +193,11 @@ retrieve → (optional entity gate) → [sources-only?] ─┬→ Fast Path
   - [ ] `test_returns_top_parent_videos_with_canonical_metadata`
   - [ ] `test_falls_back_when_min_results_not_met`
   - [ ] `test_clip_mode_preserves_segment_dedupe`
+  - [ ] `test_applies_node_budget_limits_based_on_complexity`
 
 - `tests/router/test_intent_detection.py`
   - [ ] Regex/keyword detection + whitelist/blacklist scenarios.
+  - [ ] `test_complexity_classifier_outputs_expected_bucket`
 
 - `tests/telemetry/test_workflow_metrics.py`
   - [ ] Histogram increments for both workflows.
@@ -298,4 +330,3 @@ Return JSON: {"verdict": "baseline|fastpath|tie", "rationale": "..."}
 - [ ] Unit + integration tests
 - [ ] AI evaluator harness
 - [ ] Canary + monitoring dashboards
-

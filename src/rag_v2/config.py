@@ -17,7 +17,7 @@ class RetrievalConfig:
     enable_bm25: bool = os.getenv("ENABLE_BM25", "0") in ("1","true","yes")
     enable_ce: bool = os.getenv("ENABLE_RERANK_CE", "1") in ("1","true","yes")
 
-    stage1_topn: int = int(os.getenv("STAGE1_TOPN", "240"))     # was 80
+    stage1_topn: int = int(os.getenv("STAGE1_TOPN", "160"))     # was 80
     topk_post_rerank: int = int(os.getenv("TOPK_POST_RERANK", "40"))
 
     # CE keep policy (relative + absolute)
