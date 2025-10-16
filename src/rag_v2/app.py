@@ -497,19 +497,27 @@ def _looks_chinese(s: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", s))
 
 
-def _enrich_query(message: str, quote_min_count: int) -> str:
+def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
     lang_hint = " 请用中文回答。" if _looks_chinese(message) else " Answer in English."
     cite_hint = (
         " Immediately after each quoted excerpt, add a markdown link to the exact clip start "
         "using the video's official title (omit any date/ID prefixes) as the link text, "
         "e.g., [Some Talk Title](URL?t=START_SECONDSs). "
     )
+    deep_structure_hint = ""
+    if mode_name == "deep":
+        deep_structure_hint = (
+            " Organise the response into an `Executive Summary` section (2–4 bullet points that synthesise the findings without inline citations), "
+            "followed by a `Detailed Evidence` section that groups related findings under short subheadings and anchors every bullet or paragraph with citations, "
+            "and conclude with a `Key Takeaways` paragraph that summarises the overall insight and, if helpful, references the single most decisive citation."
+        )
     return (
         message
         + "\n\n"
         + "Answer thoroughly using multiple distinct passages. "
         f"Provide ≥{quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
         + cite_hint
+        + deep_structure_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
         "When quoting, attribute to the named speaker if metadata provides one "
@@ -563,7 +571,11 @@ def _execute_query(
         if channel_filter_payload:
             qe_kwargs["channel_filter"] = channel_filter_payload
 
-    query_text = _enrich_query(message, quote_min_count) if enforce_prompt else message
+    query_text = (
+        _enrich_query(message, quote_min_count, mode_details["name"])
+        if enforce_prompt
+        else message
+    )
     recorder = progress or ProgressRecorder(scope="rag_query")
     recorder.metadata["research_mode"] = mode_details["name"]
     if mode_details.get("label"):
