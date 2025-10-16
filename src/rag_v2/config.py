@@ -106,8 +106,6 @@ ENT_CANON_MAP = {
     "astro": "Astro",
     "hyperliquid": "Hyperliquid",
     "hyper liquid": "Hyperliquid",
-    "cz": "Changpeng Zhao",
-    "changpeng": "Changpeng Zhao",
     "changpeng zhao": "Changpeng Zhao",
     "binance": "Binance",
     "$bnb": "BNB",
