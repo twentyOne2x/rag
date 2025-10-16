@@ -1,17 +1,26 @@
-# app.py
-import os, asyncio, json, re
+import os
+import asyncio
+import json
+import queue
+import re
+from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
-from src.rag_v2.logging_utils import clean_model_refs
+from src.rag_v2.logging_utils import clean_model_refs, setup_logger
 from src.rag_v2.instrumentation import AppDiagnostics, ProgressRecorder
 from src.rag_v2.channel_catalog import channel_catalog, channel_names
 from src.rag_v2.settings import config_value, load_config
 from src.rag_v2.config import CFG
+from src.rag_v2.query_engine_v2 import ParentChildQueryEngineV2
+
+
+log = setup_logger("rag_v2.app")
 
 # Allow multiple origins: "https://www.icm.fyi,https://app.icm.fyi,http://localhost:3000"
 APP_ORIGINS = [o.strip() for o in os.getenv("APP_ORIGINS", os.getenv("APP_ORIGIN", "http://localhost:3000")).split(",") if o.strip()]
@@ -24,7 +33,96 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-qe = None  # lazily initialized once per container
+
+class EngineUnavailableError(RuntimeError):
+    """Raised when no query engine is available to service a request."""
+
+
+class QueryEnginePool:
+    """Thread-safe pool of ParentChildQueryEngineV2 instances."""
+
+    def __init__(
+        self,
+        factory: Callable[[ProgressRecorder], ParentChildQueryEngineV2],
+        *,
+        size: int,
+        acquire_timeout: float,
+    ) -> None:
+        if size < 1:
+            raise ValueError("size must be >= 1")
+        if acquire_timeout <= 0:
+            raise ValueError("acquire_timeout must be > 0")
+
+        self._factory = factory
+        self._size = size
+        self._acquire_timeout = acquire_timeout
+        self._pool: "queue.Queue[ParentChildQueryEngineV2]" = queue.Queue(maxsize=size)
+
+        primary_profiler = ProgressRecorder(scope="startup")
+        primary_engine = self._factory(primary_profiler)
+        primary_profile = getattr(primary_engine, "startup_profile", None)
+        self._pool.put(primary_engine)
+        log.info("rag[app] initialized query engine #1/%d", size)
+
+        for i in range(1, size):
+            profiler = ProgressRecorder(scope="startup", enabled=False)
+            engine = self._factory(profiler)
+            if primary_profile is not None:
+                engine.startup_profile = primary_profile
+            self._pool.put(engine)
+            log.info("rag[app] initialized query engine #%d/%d", i + 1, size)
+
+        if primary_profile is not None:
+            AppDiagnostics.record_startup(primary_profile)
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def acquire_timeout(self) -> float:
+        return self._acquire_timeout
+
+    @contextmanager
+    def acquire(self) -> Iterator[ParentChildQueryEngineV2]:
+        try:
+            engine = self._pool.get(timeout=self._acquire_timeout)
+        except queue.Empty as exc:
+            raise EngineUnavailableError(
+                f"no query engine available within {self._acquire_timeout:.1f}s"
+            ) from exc
+
+        try:
+            yield engine
+        finally:
+            self._pool.put(engine)
+
+
+qe_pool: Optional[QueryEnginePool] = None  # lazily initialized once per container
+
+
+def _int_from_env(name: str, *, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except ValueError:
+        log.warning("rag[app] invalid int for %s=%r; falling back to %d", name, raw, default)
+        return default
+
+
+def _float_from_env(name: str, *, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+        return value if value > 0 else default
+    except ValueError:
+        log.warning("rag[app] invalid float for %s=%r; falling back to %.2f", name, raw, default)
+        return default
 
 
 def _baseline_mode_entry() -> Dict[str, Any]:
@@ -59,9 +157,8 @@ def _mode_registry() -> tuple[str, Dict[str, Dict[str, Any]], Dict[str, str]]:
             "description": entry.get("description"),
             "prompt": dict(entry.get("prompt") or {}),
             "retrieval": dict(entry.get("retrieval") or {}),
-            "aliases": list(entry.get("aliases") or []),
+            "aliases": [str(a).strip().lower() for a in entry.get("aliases") or []],
         }
-        # Every canonical name resolves to itself.
         alias_map.setdefault(canon_name, canon_name)
         for alias in canonical[canon_name]["aliases"]:
             alias_map.setdefault(alias, canon_name)
@@ -163,9 +260,24 @@ def _resolve_research_mode(requested: Optional[str]) -> Dict[str, Any]:
 
 @app.on_event("startup")
 async def _startup():
-    global qe
-    profiler = ProgressRecorder(scope="startup")
-    qe = bootstrap_query_engine_v2(profiler=profiler)  # builds retriever + query engine once
+    global qe_pool
+
+    def _factory(profiler: ProgressRecorder) -> ParentChildQueryEngineV2:
+        return bootstrap_query_engine_v2(profiler=profiler)
+
+    pool_size = _int_from_env("RAG_ENGINE_POOL_SIZE", default=1)
+    acquire_timeout = _float_from_env("RAG_ENGINE_ACQUIRE_TIMEOUT", default=30.0)
+    qe_pool = QueryEnginePool(
+        _factory,
+        size=pool_size,
+        acquire_timeout=acquire_timeout,
+    )
+    log.info(
+        "rag[app] query engine pool ready size=%d acquire_timeout=%.1fs",
+        qe_pool.size,
+        qe_pool.acquire_timeout,
+    )
+
 
 # ── Request/Response models ───────────────────────────────────────────────────
 
@@ -201,6 +313,7 @@ class ChatReq(BaseModel):
     # Future: user/session ids if you want per-user routing/ablation
     # user_id: Optional[str] = None
 
+
 class ChatResp(BaseModel):
     response: str
     # Optional legacy fallback field the frontend can parse if present
@@ -219,6 +332,7 @@ def channels(scope: str = Query(default="videos", min_length=1)) -> ChannelsResp
     catalog = [ChannelInfo(**entry) for entry in channel_catalog(normalized_scope)]
     defaults = [entry.name for entry in catalog]
     return ChannelsResp(scope=normalized_scope, channels=catalog, default_selected=defaults)
+
 
 @app.get("/healthz")
 def healthz():
@@ -245,17 +359,19 @@ def healthz():
         "recent_queries": recent,
     }
 
+
 @app.post("/chat", response_model=ChatResp)
 async def chat(req: ChatReq):
     if not req.message:
         raise HTTPException(400, "message is required")
-    if qe is None:
+    if qe_pool is None:
         raise HTTPException(503, "query engine not initialized")
 
     requested_mode = _requested_mode(req)
 
     try:
         loop = asyncio.get_running_loop()
+
         def _run():
             return _execute_query(
                 message=req.message,
@@ -270,6 +386,8 @@ async def chat(req: ChatReq):
         fut = loop.run_in_executor(None, _run)
         answer_text, formatted_metadata, trace = await fut
         return _build_chat_response(answer_text, formatted_metadata, trace)
+    except EngineUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -278,7 +396,7 @@ async def chat(req: ChatReq):
 async def chat_simple(req: ChatReq):
     if not req.message:
         raise HTTPException(400, "message is required")
-    if qe is None:
+    if qe_pool is None:
         raise HTTPException(503, "query engine not initialized")
 
     loop = asyncio.get_running_loop()
@@ -298,6 +416,8 @@ async def chat_simple(req: ChatReq):
     try:
         answer_text, formatted_metadata, trace = await loop.run_in_executor(None, _run)
         return _build_chat_response(answer_text, formatted_metadata, trace)
+    except EngineUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -306,20 +426,20 @@ async def chat_simple(req: ChatReq):
 async def chat_stream(req: ChatReq):
     if not req.message:
         raise HTTPException(400, "message is required")
-    if qe is None:
+    if qe_pool is None:
         raise HTTPException(503, "query engine not initialized")
 
     requested_mode = _requested_mode(req)
     history = req.chat_history if req.chat_history is not None else req.history
 
-    queue: asyncio.Queue[Any] = asyncio.Queue()
+    queue_out: asyncio.Queue[Any] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     finished_sentinel = object()
 
     def enqueue(payload: Dict[str, Any]) -> None:
         try:
             data = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-            asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+            asyncio.run_coroutine_threadsafe(queue_out.put(data), loop)
         except Exception:
             pass
 
@@ -348,25 +468,27 @@ async def chat_stream(req: ChatReq):
                     "diagnostics": _build_diagnostics(trace),
                 }
             )
+        except EngineUnavailableError as exc:
+            enqueue({"type": "error", "error": str(exc)})
         except Exception as exc:
             enqueue({"type": "error", "error": str(exc)})
         finally:
-            asyncio.run_coroutine_threadsafe(queue.put(finished_sentinel), loop)
+            asyncio.run_coroutine_threadsafe(queue_out.put(finished_sentinel), loop)
 
     loop.run_in_executor(None, worker)
 
     async def event_stream():
         try:
             while True:
-                item = await queue.get()
+                item = await queue_out.get()
                 if item is finished_sentinel:
                     break
                 if item is not None:
                     yield item
         finally:
             # drain remaining items if any
-            while not queue.empty():
-                _ = queue.get_nowait()
+            while not queue_out.empty():
+                _ = queue_out.get_nowait()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -407,8 +529,8 @@ def _execute_query(
     enforce_prompt: bool,
     progress: Optional[ProgressRecorder] = None,
 ) -> tuple[str, Optional[str], Dict[str, Any]]:
-    if qe is None:
-        raise RuntimeError("Query engine not initialized")
+    if qe_pool is None:
+        raise RuntimeError("Query engine pool not initialized")
 
     qe_kwargs: Dict[str, Any] = {
         "router_scope": scope,
@@ -449,15 +571,18 @@ def _execute_query(
     if mode_details.get("fallback_used"):
         recorder.metadata["mode_fallback"] = True
     if retrieval_overrides:
-        recorder.metadata.setdefault("mode_overrides", retrieval_overrides)
-    resp_obj = qe.query(
-        query_text,
-        progress=recorder,
-        **{k: v for k, v in qe_kwargs.items() if v is not None},
-    )
-    answer_text = clean_model_refs(str(resp_obj))
-    formatted_metadata = getattr(resp_obj, "formatted_metadata", None)
-    trace = qe.get_last_trace() or {}
+        recorder.metadata["mode_overrides"] = retrieval_overrides
+
+    with qe_pool.acquire() as engine:
+        resp_obj = engine.query(
+            query_text,
+            progress=recorder,
+            **{k: v for k, v in qe_kwargs.items() if v is not None},
+        )
+        answer_text = clean_model_refs(str(resp_obj))
+        formatted_metadata = getattr(resp_obj, "formatted_metadata", None)
+        trace = engine.get_last_trace() or {}
+
     mode_summary = {
         "name": mode_details["name"],
         "label": mode_details.get("label"),
@@ -468,11 +593,13 @@ def _execute_query(
         "prompt": {"quote_min_count": quote_min_count},
         "retrieval_overrides": retrieval_overrides or None,
     }
+    trace.setdefault("research_mode", mode_details["name"])
     trace.setdefault("mode_config", {k: v for k, v in mode_summary.items() if v})
     if mode_details.get("label"):
         trace.setdefault("mode_label", mode_details["label"])
     if mode_details.get("requested"):
         trace.setdefault("mode_requested", mode_details["requested"])
+
     return answer_text, formatted_metadata, trace
 
 
