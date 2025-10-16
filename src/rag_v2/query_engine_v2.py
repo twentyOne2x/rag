@@ -15,6 +15,7 @@ from llama_index.core.callbacks import CBEventType, EventPayload
 from llama_index.core.query_engine import RetrieverQueryEngine
 
 from .config import CFG
+from .runtime_config import get_runtime_config, override_runtime_config
 from .postprocessors.speaker_propagator import SpeakerPropagator
 from .rerankers.cross_encoder import CEReranker
 from .postprocessors.entity_canonicalizer import EntityCanonicalizer  # NEW
@@ -277,9 +278,10 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             groups.setdefault(pid, []).append(n)
 
         out: List[NodeWithScore] = []
-        gap_s = CFG.stitch_gap_seconds
-        target_tokens = CFG.stitch_target_tokens
-        max_merge = CFG.stitch_max_merge
+        cfg = get_runtime_config()
+        gap_s = cfg.stitch_gap_seconds
+        target_tokens = cfg.stitch_target_tokens
+        max_merge = cfg.stitch_max_merge
 
         for pid, rows in groups.items():
             def _sec(node, key):
@@ -316,14 +318,15 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     out.append(base)
 
         out.sort(key=lambda n: (n.score or 0.0), reverse=True)
-        return out[: CFG.max_final_nodes]
+        return out[: cfg.max_final_nodes]
 
     def _final_k(self, q: str) -> int:
+        cfg = get_runtime_config()
         if wants_definition(q):  # short, crisp
-            return min(8, CFG.max_final_nodes)
+            return min(8, cfg.max_final_nodes)
         if "return all videos" in q.lower():  # coverage query
-            return CFG.max_final_nodes
-        return min(10, CFG.max_final_nodes)
+            return cfg.max_final_nodes
+        return min(10, cfg.max_final_nodes)
 
     def _qents(self, q: str) -> set[str]:
         ents = set(m.group(0).strip() for m in TICKER_RE.finditer(q))
@@ -335,21 +338,22 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
     def _maybe_early_abort_stage1(self, q: str, nodes: List[NodeWithScore]) -> Response | None:
         """Cheap pre-CE gate: low top score AND little entity overlap."""
-        if not (CFG.enable_early_abort and nodes):
+        cfg = get_runtime_config()
+        if not (cfg.enable_early_abort and nodes):
             return None
         top = max(float(n.score or 0.0) for n in nodes) if nodes else 0.0
 
         # unconditional cutoff
-        if top < CFG.stage1_hard_min:
+        if top < cfg.stage1_hard_min:
             self._last_abort_details = {
                 "stage": "retrieve",
                 "reason": "stage1_hard_min",
                 "top_score": top,
-                "threshold": CFG.stage1_hard_min,
+                "threshold": cfg.stage1_hard_min,
             }
             log.info("qe[early-abort] q='%s' reason=stage1_hard_min top=%.5f<th=%.5f",
-                     q, top, CFG.stage1_hard_min)
-            return Response(CFG.abort_message, source_nodes=[])
+                     q, top, cfg.stage1_hard_min)
+            return Response(cfg.abort_message, source_nodes=[])
 
         qents = self._qents(q)
         rel = 0
@@ -359,33 +363,34 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             ents |= {str(e).lower() for e in (md.get("canonical_entities") or [])}
             if ents & qents:
                 rel += 1
-        if top < CFG.stage1_top_min and rel < CFG.stage1_min_relevant:
+        if top < cfg.stage1_top_min and rel < cfg.stage1_min_relevant:
             self._last_abort_details = {
                 "stage": "retrieve",
                 "reason": "stage1_low",
                 "top_score": top,
                 "relevant_hits": rel,
-                "threshold": CFG.stage1_top_min,
-                "min_relevant": CFG.stage1_min_relevant,
+                "threshold": cfg.stage1_top_min,
+                "min_relevant": cfg.stage1_min_relevant,
             }
             log.info("qe[early-abort] q='%s' reason=stage1_low top=%.4f rel=%d", q, top, rel)
-            return Response(CFG.abort_message, source_nodes=[])
+            return Response(cfg.abort_message, source_nodes=[])
         return None
 
     def _maybe_early_abort_post_ce(self, ce_norm: List[float]) -> Response | None:
         """Post-CE gate: after CE scoring but before synthesis."""
-        if not CFG.enable_early_abort:
+        cfg = get_runtime_config()
+        if not cfg.enable_early_abort:
             return None
         mx = max(ce_norm) if ce_norm else 0.0
-        if mx < CFG.ce_max_norm_min:
+        if mx < cfg.ce_max_norm_min:
             self._last_abort_details = {
                 "stage": "rerank_cross_encoder",
                 "reason": "ce_low",
                 "max_norm": mx,
-                "threshold": CFG.ce_max_norm_min,
+                "threshold": cfg.ce_max_norm_min,
             }
             log.info("qe[early-abort] reason=ce_low max_norm=%.4f", mx)
-            return Response(CFG.abort_message, source_nodes=[])
+            return Response(cfg.abort_message, source_nodes=[])
         return None
 
     # -------- sync path --------
@@ -398,6 +403,8 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         history_hint = kwargs.pop("history", None)
         router_scope_hint = kwargs.pop("router_scope", None)
         definition_hint = kwargs.pop("definition_mode", None)
+        mode_hint = kwargs.pop("research_mode", None)
+        mode_overrides = kwargs.pop("mode_overrides", None)
         extra_kwargs = dict(kwargs)
         if extra_kwargs:
             log.debug("qe[query] dropping unsupported kwargs: %s", sorted(extra_kwargs.keys()))
@@ -412,6 +419,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             "history": history_hint,
             "router_scope": router_scope_hint,
             "definition_mode": definition_hint,
+            "research_mode": mode_hint,
         }
 
         if channel_filter and hasattr(self._retriever, "set_channel_filter"):
@@ -428,7 +436,8 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         recorder.metadata["channel_filter"] = channel_filter
 
         try:
-            return super().query(query)
+            with override_runtime_config(mode_overrides):
+                return super().query(query)
         finally:
             self._active_progress = prev
             self._active_channel_filter = prev_filter
@@ -494,6 +503,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         return summary
 
     def _query(self, query_bundle: QueryBundle, **kwargs) -> RESPONSE_TYPE:
+        cfg_runtime = get_runtime_config()
         q = query_bundle.query_str
         progress = self._active_progress or ProgressRecorder(scope="rag_query")
         progress.metadata.setdefault("query", q)
@@ -518,10 +528,14 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         if required_entities:
             progress.metadata["required_entities"] = sorted(required_entities)
 
+        cfg_runtime = get_runtime_config()
+
         # Optional hints the caller may provide (history, router scope, definition mode, etc.).
         history = hints.get("history")
         router_scope = hints.get("router_scope")
         definition_mode = hints.get("definition_mode")
+        research_mode = hints.get("research_mode")
+        mode_overrides_hint = hints.get("mode_overrides") or {}
 
         if history is not None:
             progress.metadata["history_len"] = len(history) if hasattr(history, "__len__") else 1
@@ -529,10 +543,14 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             progress.metadata["router_scope"] = router_scope
         if definition_mode is not None:
             progress.metadata["definition_mode"] = bool(definition_mode)
+        if research_mode:
+            progress.metadata["research_mode"] = research_mode
+        if mode_overrides_hint:
+            progress.metadata["mode_overrides"] = mode_overrides_hint
 
         trace: Dict[str, Any] = {
             "query": q,
-            "config": cfg_snapshot(CFG),
+            "config": cfg_snapshot(cfg_runtime),
             "models": model_snapshot(),
         }
         trace["request_id"] = progress.request_id
@@ -541,6 +559,10 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         trace["definition_mode"] = definition_mode
         trace["history_present"] = bool(history)
         trace["required_entities"] = sorted(required_entities)
+        if research_mode:
+            trace["research_mode"] = research_mode
+        if mode_overrides_hint:
+            trace["mode_overrides"] = mode_overrides_hint
 
         self._last_abort_details = None
         nodes: List[NodeWithScore] = []
@@ -608,7 +630,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                         label="Final validation step (post-answer checks)",
                     )
                     trace["final_kept"] = []
-                    trace["final_text"] = CFG.abort_message
+                    trace["final_text"] = cfg_runtime.abort_message
                     summary = self._finalize_trace(trace, progress)
                     log.info(
                         "qe[entity-gate] [%s] q='%s' required=%s -> no matches",
@@ -616,17 +638,17 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                         q,
                         required,
                     )
-                    return Response(CFG.abort_message, source_nodes=[])
+                    return Response(cfg_runtime.abort_message, source_nodes=[])
 
             max_post_boost = max((float(n.score or 0.0) for n in nodes), default=0.0)
             trace["post_boost_max_score"] = max_post_boost
             progress.metadata["post_boost_max_score"] = max_post_boost
-            if max_post_boost < CFG.post_boost_hard_min:
+            if max_post_boost < cfg_runtime.post_boost_hard_min:
                 self._last_abort_details = {
                     "stage": "retrieve",
                     "reason": "post_boost_low",
                     "max_score": max_post_boost,
-                    "threshold": CFG.post_boost_hard_min,
+                    "threshold": cfg_runtime.post_boost_hard_min,
                 }
                 progress.add_event(
                     "rerank_cross_encoder",
@@ -658,16 +680,16 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     label="Final validation step (post-answer checks)",
                 )
                 trace["final_kept"] = []
-                trace["final_text"] = CFG.abort_message
+                trace["final_text"] = cfg_runtime.abort_message
                 summary = self._finalize_trace(trace, progress)
                 log.info(
                     "qe[post-boost-low] [%s] q='%s' max=%.4f<th=%.4f",
                     summary["request_id"],
                     q,
                     max_post_boost,
-                    CFG.post_boost_hard_min,
+                    cfg_runtime.post_boost_hard_min,
                 )
-                return Response(CFG.abort_message, source_nodes=[])
+                return Response(cfg_runtime.abort_message, source_nodes=[])
 
             early = self._maybe_early_abort_stage1(q, nodes)
             if early:
@@ -736,7 +758,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                         rescored = rescored_chunks
                         trace["ce_scores"] = [{"segment_id": sid, "score_ce": sc} for (sid, _t, sc) in rescored]
                         if required_entities:
-                            weight = float(getattr(CFG, "entity_overlap_weight", 0.4))
+                            weight = float(getattr(cfg_runtime, "entity_overlap_weight", 0.4))
                             blended: List[Tuple[str, str, float]] = []
                             blend_debug: List[Dict[str, Any]] = []
                             for sid, text, sc in rescored:
@@ -757,7 +779,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             trace["ce_entity_blend"] = blend_debug
                             trace["entity_overlap_weight"] = weight
                         # summary overlap blend
-                        alpha = float(getattr(CFG, "summary_rerank_alpha_def", 0.2)) if wants_definition(q) else float(getattr(CFG, "summary_rerank_alpha_default", 0.05))
+                        alpha = float(getattr(cfg_runtime, "summary_rerank_alpha_def", 0.2)) if wants_definition(q) else float(getattr(cfg_runtime, "summary_rerank_alpha_default", 0.05))
                         if alpha > 0:
                             q_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", q.lower()))
                             blended2: List[Tuple[str, str, float]] = []
@@ -787,19 +809,19 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             if self._last_abort_details:
                                 trace["early_abort"] = self._last_abort_details
                         else:
-                            pcut = self._percentile_cut(ce_norm, CFG.ce_keep_percentile)
-                            kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= CFG.ce_abs_min)]
+                            pcut = self._percentile_cut(ce_norm, cfg_runtime.ce_keep_percentile)
+                            kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= cfg_runtime.ce_abs_min)]
                             if not kept:
-                                kept = nodes[: CFG.ce_min_keep]
-                            elif len(kept) < CFG.ce_min_keep:
-                                extra = [n for n in nodes if n not in kept][: (CFG.ce_min_keep - len(kept))]
+                                kept = nodes[: cfg_runtime.ce_min_keep]
+                            elif len(kept) < cfg_runtime.ce_min_keep:
+                                extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
                                 kept.extend(extra)
                             nodes = kept
 
                         trace["ce_keep_policy"] = {
-                            "percentile": CFG.ce_keep_percentile,
-                            "abs_min": CFG.ce_abs_min,
-                            "min_keep": CFG.ce_min_keep,
+                            "percentile": cfg_runtime.ce_keep_percentile,
+                            "abs_min": cfg_runtime.ce_abs_min,
+                            "min_keep": cfg_runtime.ce_min_keep,
                             "pcut": pcut,
                             "kept_after_ce": len(nodes),
                         }
@@ -819,7 +841,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     trace["ce_skipped"] = True
 
                 if not early:
-                    nodes = nodes[: CFG.topk_post_rerank]
+                    nodes = nodes[: cfg_runtime.topk_post_rerank]
 
                     with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
                         review_step.metadata["input_count"] = len(nodes)
@@ -913,11 +935,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             return Response("No results found.", source_nodes=[])
 
         # Optionally prepend parent summaries as additional context
-        if getattr(CFG, "enable_parent_summary_context", True):
+        if getattr(cfg_runtime, "enable_parent_summary_context", True):
             summaries = []
             seen = set()
-            max_chars = int(getattr(CFG, "summary_max_len_chars", 600))
-            cap_tokens = int(getattr(CFG, "summary_context_token_cap", 800))
+            max_chars = int(getattr(cfg_runtime, "summary_max_len_chars", 600))
+            cap_tokens = int(getattr(cfg_runtime, "summary_context_token_cap", 800))
             used_tokens = 0
             for n in nodes:
                 md = n.node.metadata or {}
@@ -998,7 +1020,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             if early:
                 return early
 
-        nodes = nodes[: CFG.topk_post_rerank]
+        nodes = nodes[: cfg_runtime.topk_post_rerank]
 
         # Postprocess, stitch, cap, annotate (same order as sync)
         nodes = self._entity_canonicalizer._postprocess_nodes(nodes)

@@ -13,6 +13,34 @@ retrieval:
   min_chunks_for_response: 5
   num_chunks_searched_for_reranking: 70
   debug: false
+modes:
+  default: quick
+  quick:
+    label: Quick Research
+    description: Low-latency baseline retrieval for everyday prompts.
+    prompt:
+      quote_min_count: 4
+    retrieval:
+      stage1_topn: 160
+      topk_post_rerank: 40
+      ce_min_keep: 20
+      max_final_nodes: 12
+  deep:
+    label: Deep Research
+    description: Wider recall pass with larger synthesis budget and denser citations.
+    aliases:
+      - thorough
+      - verbose
+    prompt:
+      quote_min_count: 6
+    retrieval:
+      stage1_topn: 260
+      topk_post_rerank: 60
+      ce_min_keep: 28
+      ce_keep_percentile: 0.9
+      ce_abs_min: 0.28
+      max_final_nodes: 18
+      max_segments_per_parent: 10
 pinecone:
   index_name: icmfyi-v2
   namespace: videos

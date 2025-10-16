@@ -5,7 +5,8 @@ import os
 from typing import Any, Dict, List, Optional, Tuple, Set
 import re
 
-from ..config import CFG, ENT_CANON_MAP
+from ..config import ENT_CANON_MAP
+from ..runtime_config import get_runtime_config
 from ..router.video_router import TICKER_RE, HANDLE_RE, wants_definition
 from ..postprocessors.entity_utils import canon_entity, canon_entities
 from ..utils.scoring import recency_decay, apply_multiplier
@@ -182,10 +183,11 @@ class ParentChildRetrieverV2:
         return out, expanded_map
 
     def _apply_metadata_boosts(self, nodes, query: str, qents_lc: set):
+        cfg = get_runtime_config()
         def_score = 1.0 if not wants_definition(query) else 1.2
-        ent_gain = float(getattr(CFG, "entity_overlap_gain", 0.15))
-        router_mult = float(getattr(CFG, "router_boost_mult", 1.05))
-        streams_mult = float(getattr(CFG, "streams_bias_mult", 1.08))
+        ent_gain = float(getattr(cfg, "entity_overlap_gain", 0.15))
+        router_mult = float(getattr(cfg, "router_boost_mult", 1.05))
+        streams_mult = float(getattr(cfg, "streams_bias_mult", 1.08))
 
         boosted_list = []
         q_lc = query.lower()
@@ -196,7 +198,10 @@ class ParentChildRetrieverV2:
             s = float(nws.score or 0.0)
 
             # recency decay
-            decay = recency_decay(md.get("published_date") or md.get("published_at"), CFG.recency_half_life_days)
+            decay = recency_decay(
+                md.get("published_date") or md.get("published_at"),
+                cfg.recency_half_life_days,
+            )
             s *= decay
 
             # router/explainer bias mirrored on child
@@ -216,12 +221,12 @@ class ParentChildRetrieverV2:
                 s = apply_multiplier(s, streams_mult)
 
             # parent topic summary overlap (light boost)
-            if getattr(CFG, "enable_summary_boost", True):
+            if getattr(cfg, "enable_summary_boost", True):
                 summ = (md.get("parent_topic_summary") or "").lower()
                 if summ:
                     s_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", summ))
                     if q_tokens and (q_tokens & s_tokens):
-                        s = apply_multiplier(s, float(getattr(CFG, "summary_boost_mult", 1.05)))
+                        s = apply_multiplier(s, float(getattr(cfg, "summary_boost_mult", 1.05)))
 
             nws.score = s
             boosted_list.append(
@@ -354,10 +359,11 @@ class ParentChildRetrieverV2:
         channel_filter_dbg["stage1b_candidates"] = len(filt_nodes)
         channel_filter_dbg["stage1b_filter"] = filt_dbg.get("filter")
 
+        cfg = get_runtime_config()
         merged = self._merge_and_boost_filtered(
             nodes,
             filt_nodes,
-            float(getattr(CFG, "entity_filter_boost", 1.35)),
+            float(getattr(cfg, "entity_filter_boost", 1.35)),
         )
 
         # --- NEW: enrich children with parent metadata (title/channel/date/url) BEFORE boosts ---
@@ -434,7 +440,7 @@ class ParentChildRetrieverV2:
         merged_diverse = []
         for pid, rows in by_parent.items():
             rows.sort(key=lambda r: (r.score or 0.0), reverse=True)
-            merged_diverse.extend(rows[:CFG.max_segments_per_parent])
+            merged_diverse.extend(rows[: cfg.max_segments_per_parent])
         merged = merged_diverse
 
         # Neighbor expansion
@@ -442,7 +448,7 @@ class ParentChildRetrieverV2:
 
         # Pre-CE shortlist
         neighbors_sorted = sorted(neighbors, key=lambda n: (n.score or 0.0), reverse=True)
-        neighbors_topn = neighbors_sorted[: CFG.stage1_topn]
+        neighbors_topn = neighbors_sorted[: cfg.stage1_topn]
         required_entities = self._entity_requirements
         if not required_entities and qents_canonical:
             required_entities = qents_canonical

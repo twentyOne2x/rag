@@ -1,5 +1,6 @@
 # app.py
 import os, asyncio, json, re
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
 from src.rag_v2.logging_utils import clean_model_refs
 from src.rag_v2.instrumentation import AppDiagnostics, ProgressRecorder
 from src.rag_v2.channel_catalog import channel_catalog, channel_names
-from src.rag_v2.settings import config_value
+from src.rag_v2.settings import config_value, load_config
 from src.rag_v2.config import CFG
 
 # Allow multiple origins: "https://www.icm.fyi,https://app.icm.fyi,http://localhost:3000"
@@ -24,6 +25,141 @@ app.add_middleware(
 )
 
 qe = None  # lazily initialized once per container
+
+
+def _baseline_mode_entry() -> Dict[str, Any]:
+    """Default mode used when no configuration is provided."""
+    return {
+        "name": "quick",
+        "label": "Quick Research",
+        "description": "Balanced latency/cost retrieval used when no mode is specified.",
+        "prompt": {"quote_min_count": CFG.quote_min_count},
+        "retrieval": {},
+        "aliases": ["quick", "default"],
+    }
+
+
+@lru_cache(maxsize=1)
+def _mode_registry() -> tuple[str, Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """
+    Load the configured research modes once and build an alias map so requests
+    can refer to them by canonical name or shorthand (e.g., 'quick', 'deep').
+    """
+    config = load_config()
+    modes_section = config.get("modes") or {}
+
+    canonical: Dict[str, Dict[str, Any]] = {}
+    alias_map: Dict[str, str] = {}
+
+    def register(entry: Dict[str, Any]) -> None:
+        canon_name = entry["name"]
+        canonical[canon_name] = {
+            "name": canon_name,
+            "label": entry.get("label"),
+            "description": entry.get("description"),
+            "prompt": dict(entry.get("prompt") or {}),
+            "retrieval": dict(entry.get("retrieval") or {}),
+            "aliases": list(entry.get("aliases") or []),
+        }
+        # Every canonical name resolves to itself.
+        alias_map.setdefault(canon_name, canon_name)
+        for alias in canonical[canon_name]["aliases"]:
+            alias_map.setdefault(alias, canon_name)
+
+    # Ensure at least one mode is always available.
+    register(_baseline_mode_entry())
+
+    for name, payload in modes_section.items():
+        if name == "default":
+            continue
+        canon_name = str(name).strip().lower()
+        if not canon_name:
+            continue
+        aliases = {canon_name}
+        for alias in payload.get("aliases") or []:
+            alias_str = str(alias).strip().lower()
+            if alias_str:
+                aliases.add(alias_str)
+        entry = {
+            "name": canon_name,
+            "label": payload.get("label") or canon_name.replace("_", " ").title(),
+            "description": payload.get("description"),
+            "prompt": dict(payload.get("prompt") or {}),
+            "retrieval": dict(payload.get("retrieval") or {}),
+            "aliases": sorted(aliases),
+        }
+        register(entry)
+
+    default_src = modes_section.get("default")
+    env_override = os.getenv("RAG_DEFAULT_MODE")
+    default_raw = env_override if env_override else default_src
+    default_key = str(default_raw).strip().lower() if default_raw else "quick"
+    if default_key not in canonical:
+        default_key = "quick"
+
+    # Allow callers to request "default" explicitly.
+    alias_map.setdefault("default", default_key)
+    return default_key, canonical, alias_map
+
+
+def _coerce_override(key: str, value: Any) -> Any:
+    """Cast override values to match the RetrievalConfig field types."""
+    base = getattr(CFG, key, None)
+    if isinstance(base, bool):
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() in {"1", "true", "yes", "on"}
+    if isinstance(base, int) and not isinstance(base, bool):
+        return int(value)
+    if isinstance(base, float):
+        return float(value)
+    if base is None:
+        return value
+    try:
+        return type(base)(value)
+    except Exception:
+        return value
+
+
+def _sanitize_mode_overrides(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return only valid retrieval config overrides with coerced types."""
+    sanitized: Dict[str, Any] = {}
+    if not raw:
+        return sanitized
+    for key, value in raw.items():
+        if value is None or not hasattr(CFG, key):
+            continue
+        try:
+            sanitized[key] = _coerce_override(key, value)
+        except Exception:
+            continue
+    return sanitized
+
+
+def _resolve_research_mode(requested: Optional[str]) -> Dict[str, Any]:
+    """Resolve the requested research mode (or fallback) and return settings."""
+    default_key, canonical, alias_map = _mode_registry()
+    candidate = (requested or "").strip().lower()
+    fallback_used = False
+    canonical_key = alias_map.get(candidate) if candidate else None
+    if not canonical_key:
+        fallback_used = bool(candidate)
+        canonical_key = default_key
+    entry = canonical.get(canonical_key) or canonical[default_key]
+    prompt = dict(entry.get("prompt") or {})
+    prompt.setdefault("quote_min_count", CFG.quote_min_count)
+    retrieval = dict(entry.get("retrieval") or {})
+    return {
+        "name": entry["name"],
+        "label": entry.get("label"),
+        "description": entry.get("description"),
+        "prompt": prompt,
+        "retrieval": retrieval,
+        "requested": requested,
+        "fallback_used": fallback_used,
+        "available_modes": sorted(canonical.keys()),
+    }
+
 
 @app.on_event("startup")
 async def _startup():
@@ -60,6 +196,8 @@ class ChatReq(BaseModel):
     scope: Optional[str] = None            # "videos" | "streams" | "auto"
     definition: Optional[bool] = None      # definition/explainer intent
     channel_filter: Optional[ChannelFilter] = None
+    research_mode: Optional[str] = None    # "quick" | "deep" | alias
+    mode: Optional[str] = None             # alias for research_mode
     # Future: user/session ids if you want per-user routing/ablation
     # user_id: Optional[str] = None
 
@@ -69,6 +207,10 @@ class ChatResp(BaseModel):
     formatted_metadata: Optional[str] = None
     request_id: Optional[str] = None
     diagnostics: Optional[Dict[str, Any]] = None
+
+
+def _requested_mode(req: ChatReq) -> Optional[str]:
+    return req.research_mode or req.mode
 
 
 @app.get("/channels", response_model=ChannelsResp)
@@ -110,6 +252,8 @@ async def chat(req: ChatReq):
     if qe is None:
         raise HTTPException(503, "query engine not initialized")
 
+    requested_mode = _requested_mode(req)
+
     try:
         loop = asyncio.get_running_loop()
         def _run():
@@ -119,6 +263,7 @@ async def chat(req: ChatReq):
                 scope=req.scope,
                 definition=req.definition,
                 channel_filter=req.channel_filter,
+                research_mode=requested_mode,
                 enforce_prompt=True,
             )
 
@@ -137,6 +282,7 @@ async def chat_simple(req: ChatReq):
         raise HTTPException(503, "query engine not initialized")
 
     loop = asyncio.get_running_loop()
+    requested_mode = _requested_mode(req)
 
     def _run():
         return _execute_query(
@@ -145,6 +291,7 @@ async def chat_simple(req: ChatReq):
             scope=req.scope,
             definition=req.definition,
             channel_filter=req.channel_filter,
+            research_mode=requested_mode,
             enforce_prompt=False,
         )
 
@@ -162,6 +309,7 @@ async def chat_stream(req: ChatReq):
     if qe is None:
         raise HTTPException(503, "query engine not initialized")
 
+    requested_mode = _requested_mode(req)
     history = req.chat_history if req.chat_history is not None else req.history
 
     queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -188,6 +336,7 @@ async def chat_stream(req: ChatReq):
                 scope=req.scope,
                 definition=req.definition,
                 channel_filter=req.channel_filter,
+                research_mode=requested_mode,
                 enforce_prompt=True,
                 progress=progress,
             )
@@ -226,7 +375,7 @@ def _looks_chinese(s: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", s))
 
 
-def _enrich_query(message: str) -> str:
+def _enrich_query(message: str, quote_min_count: int) -> str:
     lang_hint = " 请用中文回答。" if _looks_chinese(message) else " Answer in English."
     cite_hint = (
         " Immediately after each quoted excerpt, add a markdown link to the exact clip start "
@@ -237,7 +386,7 @@ def _enrich_query(message: str) -> str:
         message
         + "\n\n"
         + "Answer thoroughly using multiple distinct passages. "
-        f"Provide ≥{CFG.quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
+        f"Provide ≥{quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
         + cite_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
@@ -254,6 +403,7 @@ def _execute_query(
     scope: Optional[str],
     definition: Optional[bool],
     channel_filter: Optional[ChannelFilter],
+    research_mode: Optional[str],
     enforce_prompt: bool,
     progress: Optional[ProgressRecorder] = None,
 ) -> tuple[str, Optional[str], Dict[str, Any]]:
@@ -265,6 +415,16 @@ def _execute_query(
         "definition_mode": definition,
         "history": history,
     }
+    mode_details = _resolve_research_mode(research_mode)
+    raw_quote = mode_details["prompt"].get("quote_min_count", CFG.quote_min_count)
+    try:
+        quote_min_count = max(1, int(raw_quote))
+    except Exception:
+        quote_min_count = CFG.quote_min_count
+    retrieval_overrides = _sanitize_mode_overrides(mode_details.get("retrieval"))
+    if retrieval_overrides:
+        qe_kwargs["mode_overrides"] = retrieval_overrides
+    qe_kwargs["research_mode"] = mode_details["name"]
 
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if channel_filter:
@@ -281,8 +441,15 @@ def _execute_query(
         if channel_filter_payload:
             qe_kwargs["channel_filter"] = channel_filter_payload
 
-    query_text = _enrich_query(message) if enforce_prompt else message
+    query_text = _enrich_query(message, quote_min_count) if enforce_prompt else message
     recorder = progress or ProgressRecorder(scope="rag_query")
+    recorder.metadata["research_mode"] = mode_details["name"]
+    if mode_details.get("label"):
+        recorder.metadata["research_mode_label"] = mode_details["label"]
+    if mode_details.get("fallback_used"):
+        recorder.metadata["mode_fallback"] = True
+    if retrieval_overrides:
+        recorder.metadata.setdefault("mode_overrides", retrieval_overrides)
     resp_obj = qe.query(
         query_text,
         progress=recorder,
@@ -291,6 +458,21 @@ def _execute_query(
     answer_text = clean_model_refs(str(resp_obj))
     formatted_metadata = getattr(resp_obj, "formatted_metadata", None)
     trace = qe.get_last_trace() or {}
+    mode_summary = {
+        "name": mode_details["name"],
+        "label": mode_details.get("label"),
+        "description": mode_details.get("description"),
+        "requested": mode_details.get("requested"),
+        "fallback_used": mode_details.get("fallback_used"),
+        "available_modes": mode_details.get("available_modes"),
+        "prompt": {"quote_min_count": quote_min_count},
+        "retrieval_overrides": retrieval_overrides or None,
+    }
+    trace.setdefault("mode_config", {k: v for k, v in mode_summary.items() if v})
+    if mode_details.get("label"):
+        trace.setdefault("mode_label", mode_details["label"])
+    if mode_details.get("requested"):
+        trace.setdefault("mode_requested", mode_details["requested"])
     return answer_text, formatted_metadata, trace
 
 
@@ -307,6 +489,10 @@ def _build_diagnostics(trace: Dict[str, Any]) -> Dict[str, Any]:
         "config": trace.get("config"),
         "early_abort": trace.get("early_abort"),
         "channel_filter": trace.get("channel_filter"),
+        "research_mode": trace.get("research_mode"),
+        "mode_config": trace.get("mode_config"),
+        "mode_label": trace.get("mode_label"),
+        "mode_requested": trace.get("mode_requested"),
         "telemetry_summary": trace.get("telemetry_summary"),
     }
     return {k: v for k, v in diagnostics_payload.items() if v is not None}
