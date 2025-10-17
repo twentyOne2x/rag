@@ -68,6 +68,8 @@ class RetrievalConfig:
         "ABORT_MESSAGE",
         "I don’t have enough high-quality clips to answer that right now."
     )
+    # Final confidence gate
+    min_final_score: float = float(os.getenv("MIN_FINAL_SCORE", "0.01"))
     # NEW: require at least one entity hit for definition-style queries
     def_require_entity_hit: bool = os.getenv("DEF_REQUIRE_ENTITY_HIT", "1") in ("1", "true", "yes")
 
@@ -110,6 +112,9 @@ ENT_CANON_MAP = {
     "binance": "Binance",
     "$bnb": "BNB",
     "bnb": "BNB",
+    "rasmr": "Rasmr",
+    "rasmer": "Rasmr",
+    "rasmur": "Rasmr",
     "orangie": "Orangie",
     "orangy": "Orangie",
     "orangey": "Orangie",

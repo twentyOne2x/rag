@@ -32,7 +32,7 @@ from .logging_utils import (
     append_sources_block,
 )
 from .router.video_router import wants_definition
-from .instrumentation import AppDiagnostics, ProgressRecorder
+from .instrumentation import AppDiagnostics, ProgressRecorder, ProgressEvent
 from .telemetry import TelemetryCollector, JsonlTelemetryWriter
 from .settings import config_value
 
@@ -257,6 +257,99 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
     def _rough_token_count(txt: str) -> int:
         # ~4 chars/token heuristic
         return max(1, len(txt) // 4)
+
+    @staticmethod
+    def _ensure_metadata(node: NodeWithScore) -> Dict[str, Any]:
+        md = getattr(node.node, "metadata", None)
+        if not isinstance(md, dict):
+            md = {}
+            node.node.metadata = md
+        return md
+
+    def _tag_stage1_scores(self, nodes: List[NodeWithScore]) -> None:
+        for item in nodes or []:
+            md = self._ensure_metadata(item)
+            if "score_stage1" not in md:
+                try:
+                    md["score_stage1"] = float(item.score or 0.0)
+                except Exception:
+                    md["score_stage1"] = 0.0
+
+    def _tag_ce_scores(self, nodes: List[NodeWithScore]) -> None:
+        for item in nodes or []:
+            md = self._ensure_metadata(item)
+            try:
+                raw = float(item.score or 0.0)
+            except Exception:
+                raw = 0.0
+            md["score_ce"] = raw
+            md["score_ce_norm"] = self._sigmoid(raw)
+
+    def _node_confidence(self, node: NodeWithScore) -> float:
+        md = self._ensure_metadata(node)
+        if "score_ce_norm" in md:
+            try:
+                return max(0.0, float(md["score_ce_norm"]))
+            except Exception:
+                pass
+        if "score_stage1" in md:
+            try:
+                return max(0.0, float(md["score_stage1"]))
+            except Exception:
+                pass
+        try:
+            return max(0.0, float(node.score or 0.0))
+        except Exception:
+            return 0.0
+
+    def _apply_low_confidence_filter(
+        self,
+        nodes: List[NodeWithScore],
+        threshold: float,
+        trace: Optional[Dict[str, Any]] = None,
+        progress: Optional[ProgressRecorder] = None,
+        step: Optional[ProgressEvent] = None,
+    ) -> List[NodeWithScore]:
+        if not nodes or threshold <= 0:
+            return nodes
+
+        kept: List[NodeWithScore] = []
+        dropped_info: List[Dict[str, Any]] = []
+        for item in nodes:
+            confidence = self._node_confidence(item)
+            md = self._ensure_metadata(item)
+            md["confidence_norm"] = confidence
+            if confidence >= threshold:
+                kept.append(item)
+            else:
+                sid = md.get("segment_id") or md.get("id") or item.node.node_id
+                dropped_info.append(
+                    {
+                        "segment_id": sid,
+                        "confidence": round(confidence, 4),
+                        "title": md.get("title") or md.get("parent_title"),
+                        "threshold": threshold,
+                    }
+                )
+
+        if dropped_info:
+            low_conf = trace.setdefault("low_confidence", {})
+            existing = low_conf.get("dropped") or []
+            existing.extend(dropped_info)
+            low_conf["dropped"] = existing
+            low_conf["threshold"] = threshold
+            low_conf["kept_after_filter"] = len(kept)
+            if progress is not None:
+                progress.metadata["low_confidence_dropped"] = progress.metadata.get("low_confidence_dropped", 0) + len(dropped_info)
+            if step is not None:
+                step.metadata["dropped_low_confidence"] = len(dropped_info)
+                step.metadata["threshold"] = threshold
+
+        if not kept and trace is not None:
+            low_conf = trace.setdefault("low_confidence", {})
+            low_conf["exhausted"] = True
+
+        return kept
 
     @staticmethod
     def _hms_to_seconds(hms: str) -> int:
@@ -572,6 +665,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         with self.callback_manager.event(CBEventType.RETRIEVE, payload={EventPayload.QUERY_STR: q}) as revent:
             with progress.step("retrieve", "Finding likely sources (vector retrieval)") as retrieve_step:
                 nodes = self._retriever.retrieve(query_bundle)
+                self._tag_stage1_scores(nodes)
                 retrieve_step.metadata.update({
                     "initial_candidates": len(nodes),
                     "similarity_top_k": getattr(
@@ -817,6 +911,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                 extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
                                 kept.extend(extra)
                             nodes = kept
+                        self._tag_ce_scores(nodes)
 
                         trace["ce_keep_policy"] = {
                             "percentile": cfg_runtime.ce_keep_percentile,
@@ -909,8 +1004,6 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             )
             return early
 
-        trace["final_kept"] = self._final_sources_view(nodes)
-
         if not nodes:
             progress.add_event(
                 "synthesize",
@@ -923,6 +1016,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 status="not_implemented",
                 label="Final validation step (post-answer checks)",
             )
+            trace["final_kept"] = []
             trace["final_text"] = "No results found."
             summary = self._finalize_trace(trace, progress)
             log.debug(pretty(trace))
@@ -933,6 +1027,34 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 summary["total_ms"],
             )
             return Response("No results found.", source_nodes=[])
+
+        threshold = float(getattr(cfg_runtime, "min_final_score", 0.0) or 0.0)
+        if threshold > 0:
+            nodes = self._apply_low_confidence_filter(nodes, threshold, trace, progress)
+            if not nodes:
+                progress.add_event(
+                    "synthesize",
+                    status="skipped",
+                    label="Writing final answer (LLM synthesis)",
+                    metadata={"reason": "low_confidence"},
+                )
+                progress.add_event(
+                    "validate_answer",
+                    status="not_implemented",
+                    label="Final validation step (post-answer checks)",
+                )
+                trace["final_kept"] = []
+                trace["final_text"] = cfg_runtime.abort_message
+                summary = self._finalize_trace(trace, progress)
+                log.info(
+                    "qe[low-confidence] [%s] q='%s' threshold=%.4f -> insufficient evidence",
+                    summary["request_id"],
+                    q,
+                    threshold,
+                )
+                return Response(cfg_runtime.abort_message, source_nodes=[])
+
+        trace["final_kept"] = self._final_sources_view(nodes)
 
         # Optionally prepend parent summaries as additional context
         if getattr(cfg_runtime, "enable_parent_summary_context", True):
@@ -991,9 +1113,11 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
     # -------- async path --------
     async def _aquery(self, query_bundle: QueryBundle) -> RESPONSE_TYPE:
         q = query_bundle.query_str
+        cfg_runtime = get_runtime_config()
         trace: Dict[str, Any] = {"query": q}
 
         nodes: List[NodeWithScore] = await asyncio.to_thread(self._retriever.retrieve, query_bundle)
+        self._tag_stage1_scores(nodes)
 
         early = self._maybe_early_abort_stage1(q, nodes)
         if early:
@@ -1019,6 +1143,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             early = self._maybe_early_abort_post_ce(ce_norm)
             if early:
                 return early
+            self._tag_ce_scores(nodes)
 
         nodes = nodes[: cfg_runtime.topk_post_rerank]
 
@@ -1029,13 +1154,21 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
         nodes = nodes[: self._final_k(q)]
         nodes = self._annotate_speakers(nodes)
 
-        trace["final_kept"] = self._final_sources_view(nodes)
-
         if not nodes:
             trace["final_text"] = "No results found."
             log.debug(pretty(trace))
             log.info("qe[done] query='%s' -> no results", q)
             return Response("No results found.", source_nodes=[])
+
+        threshold = float(getattr(cfg_runtime, "min_final_score", 0.0) or 0.0)
+        if threshold > 0:
+            nodes = self._apply_low_confidence_filter(nodes, threshold, trace, progress=None)
+            if not nodes:
+                trace["final_text"] = cfg_runtime.abort_message
+                log.info("qe[low-confidence] query='%s' threshold=%.4f -> insufficient evidence", q, threshold)
+                return Response(cfg_runtime.abort_message, source_nodes=[])
+
+        trace["final_kept"] = self._final_sources_view(nodes)
 
         synth = getattr(self._core, "_response_synthesizer", None)
         asynth = getattr(synth, "asynthesize", None)
