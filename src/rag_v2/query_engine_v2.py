@@ -892,44 +892,42 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                     "alpha": alpha,
                                     "blended": round(blended_score, 4),
                                 })
-                            rescored = blended2
-                            trace["ce_summary_blend"] = blend_dbg
-                        nodes = self._reinject_scores(nodes, rescored)
+                    trace["ce_summary_blend"] = blend_dbg
+                nodes = self._reinject_scores(nodes, rescored)
 
-                        ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
-                        early = self._maybe_early_abort_post_ce(ce_norm)
-                        if early:
-                            ce_step.metadata["abort"] = self._last_abort_details
-                            if self._last_abort_details:
-                                trace["early_abort"] = self._last_abort_details
-                        else:
-                            pcut = self._percentile_cut(ce_norm, cfg_runtime.ce_keep_percentile)
-                            kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= cfg_runtime.ce_abs_min)]
-                            if not kept:
-                                kept = nodes[: cfg_runtime.ce_min_keep]
-                            elif len(kept) < cfg_runtime.ce_min_keep:
-                                extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
-                                kept.extend(extra)
-                            nodes = kept
-                        self._tag_ce_scores(nodes)
-
-                        trace["ce_keep_policy"] = {
-                            "percentile": cfg_runtime.ce_keep_percentile,
-                            "abs_min": cfg_runtime.ce_abs_min,
-                            "min_keep": cfg_runtime.ce_min_keep,
-                            "pcut": pcut,
-                            "kept_after_ce": len(nodes),
-                        }
-                        ce_step.metadata.update({
-                            "kept_after_ce": len(nodes),
-                            "pcut": pcut,
-                            "kept_sources": self._source_snapshot(nodes),
-                        })
-                    trace["ce_ms"] = ce_step.duration_ms
+                ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
+                early = self._maybe_early_abort_post_ce(ce_norm)
+                if early:
+                    ce_step.metadata["abort"] = self._last_abort_details
+                    if self._last_abort_details:
+                        trace["early_abort"] = self._last_abort_details
                 else:
-                    progress.add_event(
-                        "rerank_cross_encoder",
-                        status="skipped",
+                    pcut = self._percentile_cut(ce_norm, cfg_runtime.ce_keep_percentile)
+                    kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= cfg_runtime.ce_abs_min)]
+                    if not kept:
+                        kept = nodes[: cfg_runtime.ce_min_keep]
+                    elif len(kept) < cfg_runtime.ce_min_keep:
+                        extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
+                        kept.extend(extra)
+                    nodes = kept
+                    self._tag_ce_scores(nodes)
+                    trace["ce_keep_policy"] = {
+                        "percentile": cfg_runtime.ce_keep_percentile,
+                        "abs_min": cfg_runtime.ce_abs_min,
+                        "min_keep": cfg_runtime.ce_min_keep,
+                        "pcut": pcut,
+                        "kept_after_ce": len(nodes),
+                    }
+                    ce_step.metadata.update({
+                        "kept_after_ce": len(nodes),
+                        "pcut": pcut,
+                        "kept_sources": self._source_snapshot(nodes),
+                    })
+                trace["ce_ms"] = ce_step.duration_ms
+            else:
+                progress.add_event(
+                    "rerank_cross_encoder",
+                    status="skipped",
                         label="Re-scoring sources (cross-encoder rerank)",
                         metadata={"enabled": bool(self._ce and self._ce.enabled), "reason": "no_candidates" if not nodes else "disabled"},
                     )
