@@ -928,10 +928,13 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 progress.add_event(
                     "rerank_cross_encoder",
                     status="skipped",
-                        label="Re-scoring sources (cross-encoder rerank)",
-                        metadata={"enabled": bool(self._ce and self._ce.enabled), "reason": "no_candidates" if not nodes else "disabled"},
-                    )
-                    trace["ce_skipped"] = True
+                    label="Re-scoring sources (cross-encoder rerank)",
+                    metadata={
+                        "enabled": bool(self._ce and self._ce.enabled),
+                        "reason": "no_candidates" if not nodes else "disabled",
+                    },
+                )
+                trace["ce_skipped"] = True
 
                 if not early:
                     nodes = nodes[: cfg_runtime.topk_post_rerank]
