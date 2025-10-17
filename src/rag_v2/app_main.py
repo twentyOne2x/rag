@@ -61,21 +61,31 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
     # Attach to Pinecone (inherits Settings.embed_model for query embeddings)
     with profiler.step("load_index", "Load vector index from Pinecone") as step:
         index = _load_index_from_pinecone()
-        idx_name = os.getenv("PINECONE_INDEX_NAME", config_value("pinecone.index_name", default="icmfyi-v2"))
-        namespace = os.getenv("PINECONE_NAMESPACE", config_value("pinecone.namespace", default="videos"))
+        idx_name = os.getenv(
+            "PINECONE_INDEX_NAME",
+            config_value("pinecone.index_name", default="icmfyi-v2"),
+        )
+        namespace = os.getenv(
+            "PINECONE_NAMESPACE",
+            config_value("pinecone.namespace", default="videos"),
+        )
         os.environ["PINECONE_INDEX_NAME"] = idx_name
         os.environ["PINECONE_NAMESPACE"] = namespace
-        step.metadata.update({
-            "similarity_top_k": similarity_top_k,
-            "index_name": idx_name,
-            "namespace": namespace,
-        })
+        if step is not None:
+            step.metadata.update(
+                {
+                    "similarity_top_k": similarity_top_k,
+                    "index_name": idx_name,
+                    "namespace": namespace,
+                }
+            )
 
     # Build base retriever, then wrap with ParentChildRetrieverV2
     with profiler.step("build_retriever", "Construct retriever stack") as step:
         base_retriever = index.as_retriever(similarity_top_k=similarity_top_k, verbose=False)
         pc_retriever = ParentChildRetrieverV2(base_retriever)
-        step.metadata["stage1_top_k"] = similarity_top_k
+        if step is not None:
+            step.metadata["stage1_top_k"] = similarity_top_k
 
     # Pass through callback_manager when present
     with profiler.step("build_query_engine", "Initialize query engine") as step:
@@ -83,7 +93,8 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
             retriever=pc_retriever,
             callback_manager=getattr(index, "callback_manager", None),
         )
-        step.metadata["ce_enabled"] = bool(getattr(qe, "_ce", None))
+        if step is not None:
+            step.metadata["ce_enabled"] = bool(getattr(qe, "_ce", None))
 
     profiler.metadata["similarity_top_k"] = similarity_top_k
     startup_profile = profiler.summary()
