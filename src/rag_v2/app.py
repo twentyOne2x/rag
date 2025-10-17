@@ -504,6 +504,10 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
         "using the video's official title (omit any date/ID prefixes) as the link text, "
         "e.g., [Some Talk Title](URL?t=START_SECONDSs). "
     )
+    recency_hint = (
+        " Include the clip's publish month/year (or exact date when available). "
+        "If a cited clip is older than roughly two weeks relative to today, call out its age and note any implications for present-day relevance."
+    )
     confidence_hint = (
         " Write with confident, declarative language when the cited evidence aligns; prefer “X is…” over hedged phrasing like “X appears to be…”. "
         "Use hedging only when sources conflict or explicitly signal uncertainty."
@@ -521,6 +525,7 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
         + "Answer thoroughly using multiple distinct passages. "
         f"Provide ≥{quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
         + cite_hint
+        + recency_hint
         + confidence_hint
         + deep_structure_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
