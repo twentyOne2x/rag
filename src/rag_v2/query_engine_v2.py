@@ -822,7 +822,6 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                 "is_explainer": md.get("is_explainer"),
                             }
 
-                        # Fine-grained progress ticks per CE batch
                         total = len(packs)
                         batch_size = int(getattr(self._ce, "batch_size", 32) or 32)
                         rescored_chunks: List[Tuple[str, str, float]] = []
@@ -832,7 +831,6 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             chunk = packs[i : i + batch_size]
                             rescored_part = self._ce.rerank_with_meta(q, chunk, metas)
                             rescored_chunks.extend(rescored_part)
-                            # emit in-progress tick
                             now = time.perf_counter()
                             if now - last_tick >= tick_min_ms:
                                 processed = min(i + len(chunk), total)
@@ -872,7 +870,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                             rescored = blended
                             trace["ce_entity_blend"] = blend_debug
                             trace["entity_overlap_weight"] = weight
-                        # summary overlap blend
+
                         alpha = float(getattr(cfg_runtime, "summary_rerank_alpha_def", 0.2)) if wants_definition(q) else float(getattr(cfg_runtime, "summary_rerank_alpha_default", 0.05))
                         if alpha > 0:
                             q_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", q.lower()))
@@ -892,71 +890,74 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                                     "alpha": alpha,
                                     "blended": round(blended_score, 4),
                                 })
-                    trace["ce_summary_blend"] = blend_dbg
-                nodes = self._reinject_scores(nodes, rescored)
+                            rescored = blended2
+                            trace["ce_summary_blend"] = blend_dbg
 
-                ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
-                early = self._maybe_early_abort_post_ce(ce_norm)
-                if early:
-                    ce_step.metadata["abort"] = self._last_abort_details
-                    if self._last_abort_details:
-                        trace["early_abort"] = self._last_abort_details
+                        nodes = self._reinject_scores(nodes, rescored)
+
+                        ce_norm = [self._sigmoid(float(n.score or 0.0)) for n in nodes]
+                        early = self._maybe_early_abort_post_ce(ce_norm)
+                        if early:
+                            ce_step.metadata["abort"] = self._last_abort_details
+                            if self._last_abort_details:
+                                trace["early_abort"] = self._last_abort_details
+                        else:
+                            pcut = self._percentile_cut(ce_norm, cfg_runtime.ce_keep_percentile)
+                            kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= cfg_runtime.ce_abs_min)]
+                            if not kept:
+                                kept = nodes[: cfg_runtime.ce_min_keep]
+                            elif len(kept) < cfg_runtime.ce_min_keep:
+                                extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
+                                kept.extend(extra)
+                            nodes = kept
+                            self._tag_ce_scores(nodes)
+                            trace["ce_keep_policy"] = {
+                                "percentile": cfg_runtime.ce_keep_percentile,
+                                "abs_min": cfg_runtime.ce_abs_min,
+                                "min_keep": cfg_runtime.ce_min_keep,
+                                "pcut": pcut,
+                                "kept_after_ce": len(nodes),
+                            }
+                            ce_step.metadata.update({
+                                "kept_after_ce": len(nodes),
+                                "pcut": pcut,
+                                "kept_sources": self._source_snapshot(nodes),
+                            })
+
+                    trace["ce_ms"] = ce_step.duration_ms
                 else:
-                    pcut = self._percentile_cut(ce_norm, cfg_runtime.ce_keep_percentile)
-                    kept = [n for n, s in zip(nodes, ce_norm) if (s >= pcut) or (s >= cfg_runtime.ce_abs_min)]
-                    if not kept:
-                        kept = nodes[: cfg_runtime.ce_min_keep]
-                    elif len(kept) < cfg_runtime.ce_min_keep:
-                        extra = [n for n in nodes if n not in kept][: (cfg_runtime.ce_min_keep - len(kept))]
-                        kept.extend(extra)
-                    nodes = kept
-                    self._tag_ce_scores(nodes)
-                    trace["ce_keep_policy"] = {
-                        "percentile": cfg_runtime.ce_keep_percentile,
-                        "abs_min": cfg_runtime.ce_abs_min,
-                        "min_keep": cfg_runtime.ce_min_keep,
-                        "pcut": pcut,
-                        "kept_after_ce": len(nodes),
-                    }
-                    ce_step.metadata.update({
-                        "kept_after_ce": len(nodes),
-                        "pcut": pcut,
-                        "kept_sources": self._source_snapshot(nodes),
-                    })
-                trace["ce_ms"] = ce_step.duration_ms
-            else:
-                progress.add_event(
-                    "rerank_cross_encoder",
-                    status="skipped",
-                    label="Re-scoring sources (cross-encoder rerank)",
-                    metadata={
-                        "enabled": bool(self._ce and self._ce.enabled),
-                        "reason": "no_candidates" if not nodes else "disabled",
-                    },
-                )
-                trace["ce_skipped"] = True
+                    progress.add_event(
+                        "rerank_cross_encoder",
+                        status="skipped",
+                        label="Re-scoring sources (cross-encoder rerank)",
+                        metadata={
+                            "enabled": bool(self._ce and self._ce.enabled),
+                            "reason": "no_candidates" if not nodes else "disabled",
+                        },
+                    )
+                    trace["ce_skipped"] = True
 
-                if not early:
-                    nodes = nodes[: cfg_runtime.topk_post_rerank]
+                    if not early:
+                        nodes = nodes[: cfg_runtime.topk_post_rerank]
 
-                    with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
-                        review_step.metadata["input_count"] = len(nodes)
-                        nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
-                        nodes = self._speaker_propagator._postprocess_nodes(nodes)
-                        review_step.metadata["output_count"] = len(nodes)
-                        review_step.metadata["sample_sources"] = self._source_snapshot(nodes)
+                        with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
+                            review_step.metadata["input_count"] = len(nodes)
+                            nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+                            nodes = self._speaker_propagator._postprocess_nodes(nodes)
+                            review_step.metadata["output_count"] = len(nodes)
+                            review_step.metadata["sample_sources"] = self._source_snapshot(nodes)
 
-                    with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
-                        stitch_step.metadata["input_count"] = len(nodes)
-                        nodes = self._stitch_adjacent(nodes)
-                        nodes = nodes[: self._final_k(q)]
-                        nodes = self._annotate_speakers(nodes)
-                        stitch_step.metadata["output_count"] = len(nodes)
-                        stitch_step.metadata["final_candidates"] = self._source_snapshot(nodes)
+                        with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
+                            stitch_step.metadata["input_count"] = len(nodes)
+                            nodes = self._stitch_adjacent(nodes)
+                            nodes = nodes[: self._final_k(q)]
+                            nodes = self._annotate_speakers(nodes)
+                            stitch_step.metadata["output_count"] = len(nodes)
+                            stitch_step.metadata["final_candidates"] = self._source_snapshot(nodes)
 
-                    final_nodes = nodes
-                else:
-                    final_nodes = []
+                        final_nodes = nodes
+                    else:
+                        final_nodes = []
 
             revent.on_end(payload={EventPayload.NODES: final_nodes})
 
