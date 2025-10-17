@@ -519,6 +519,9 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
             "followed by a `Detailed Evidence` section that groups related findings under short subheadings and anchors every bullet or paragraph with citations, "
             "and conclude with a `Key Takeaways` paragraph that summarises the overall insight and, if helpful, references the single most decisive citation."
         )
+    score_hint = (
+        " If the top candidate sources all score below ~1% similarity, state that the system could not find strong matches instead of synthesising a weak answer."
+    )
     return (
         message
         + "\n\n"
@@ -528,6 +531,7 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
         + recency_hint
         + confidence_hint
         + deep_structure_hint
+        + score_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
         "When quoting, attribute to the named speaker if metadata provides one "
