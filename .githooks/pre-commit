@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "${SKIP_PRE_COMMIT_TESTS:-}" == "1" ]]; then
+  printf '[pre-commit] Skipping tests because SKIP_PRE_COMMIT_TESTS=1\n'
+  exit 0
+fi
+
+if [[ -n "${CI:-}" ]]; then
+  exit 0
+fi
+
+if ! command -v pytest >/dev/null 2>&1; then
+  printf '[pre-commit] pytest not found in PATH. Activate your virtualenv.\n' >&2
+  exit 1
+fi
+
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+printf '[pre-commit] Running targeted pytest suite…\n'
+targets=(
+  src/rag_v2/tests/test_cross_encoder.py
+  src/rag_v2/tests/test_query_engine_pipeline.py
+  src/rag_v2/tests/test_low_confidence_filter.py
+)
+
+if ! pytest "${targets[@]}"; then
+  printf '\n[pre-commit] Tests failed. Commit aborted.\n' >&2
+  exit 1
+fi
+
+printf '[pre-commit] Tests passed. Continuing commit.\n'
