@@ -937,27 +937,27 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     )
                     trace["ce_skipped"] = True
 
-                    if not early:
-                        nodes = nodes[: cfg_runtime.topk_post_rerank]
+                if not early:
+                    nodes = nodes[: cfg_runtime.topk_post_rerank]
 
-                        with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
-                            review_step.metadata["input_count"] = len(nodes)
-                            nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
-                            nodes = self._speaker_propagator._postprocess_nodes(nodes)
-                            review_step.metadata["output_count"] = len(nodes)
-                            review_step.metadata["sample_sources"] = self._source_snapshot(nodes)
+                    with progress.step("review_docs", "Cleaning and enriching notes (post-processing pipeline)") as review_step:
+                        review_step.metadata["input_count"] = len(nodes)
+                        nodes = self._entity_canonicalizer._postprocess_nodes(nodes)
+                        nodes = self._speaker_propagator._postprocess_nodes(nodes)
+                        review_step.metadata["output_count"] = len(nodes)
+                        review_step.metadata["sample_sources"] = self._source_snapshot(nodes)
 
-                        with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
-                            stitch_step.metadata["input_count"] = len(nodes)
-                            nodes = self._stitch_adjacent(nodes)
-                            nodes = nodes[: self._final_k(q)]
-                            nodes = self._annotate_speakers(nodes)
-                            stitch_step.metadata["output_count"] = len(nodes)
-                            stitch_step.metadata["final_candidates"] = self._source_snapshot(nodes)
+                    with progress.step("stitch", "Merging adjacent clips (temporal stitching)") as stitch_step:
+                        stitch_step.metadata["input_count"] = len(nodes)
+                        nodes = self._stitch_adjacent(nodes)
+                        nodes = nodes[: self._final_k(q)]
+                        nodes = self._annotate_speakers(nodes)
+                        stitch_step.metadata["output_count"] = len(nodes)
+                        stitch_step.metadata["final_candidates"] = self._source_snapshot(nodes)
 
-                        final_nodes = nodes
-                    else:
-                        final_nodes = []
+                    final_nodes = nodes
+                else:
+                    final_nodes = []
 
             revent.on_end(payload={EventPayload.NODES: final_nodes})
 

@@ -1,5 +1,4 @@
 steps:
-  # Deploy to Google Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'gcloud'
     args:
@@ -24,14 +23,13 @@ steps:
       - '--concurrency'
       - '4'
       - '--set-env-vars'
-      - 'UVICORN_WORKERS=1,RAG_ENGINE_POOL_SIZE=4,SECRET_PROJECT_ID=just-skyline-474622-e1,CE_MODEL=BAAI/bge-reranker-base'
+      - 'UVICORN_WORKERS=1,RAG_ENGINE_POOL_SIZE=4,SECRET_PROJECT_ID=just-skyline-474622-e1,CE_MODEL=BAAI/bge-reranker-base,PYTHONPATH=src'
       - '--update-secrets'
       - 'OPENAI_API_KEY=OPENAI_API_KEY:latest,PINECONE_API_KEY=PINECONE_API_KEY:latest,PINECONE_API_ENVIRONMENT=PINECONE_API_ENVIRONMENT:latest'
 
 images:
   - 'gcr.io/just-skyline-474622-e1/rag:$SHORT_SHA'
 
-# Define the secrets to be available as environment variables in the Cloud Run service
 availableSecrets:
   secretManager:
     - versionName: projects/just-skyline-474622-e1/secrets/OPENAI_API_KEY/versions/latest

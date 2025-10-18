@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Allow skips for automation or emergency fixes.
+if [[ "${SKIP_PRE_PUSH_TESTS:-}" == "1" ]]; then
+  printf '[pre-push] Skipping pytest because SKIP_PRE_PUSH_TESTS=1\n'
+  exit 0
+fi
+
+# CI systems typically run their own test suite.
+if [[ -n "${CI:-}" ]]; then
+  exit 0
+fi
+
+if ! command -v pytest >/dev/null 2>&1; then
+  printf '[pre-push] pytest not found in PATH. Activate your venv first.\n' >&2
+  exit 1
+fi
+
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+printf '[pre-push] Running pytest (src)…\n'
+if ! pytest src; then
+  printf '\n[pre-push] pytest failed. Push rejected.\n' >&2
+  exit 1
+fi
+
+printf '[pre-push] pytest passed. Continuing push.\n'
