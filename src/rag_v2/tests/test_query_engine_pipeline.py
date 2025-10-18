@@ -5,6 +5,7 @@ from typing import Any, List, Tuple
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 
 from rag_v2.query_engine_v2 import ParentChildQueryEngineV2
+from rag_v2.rerankers.cross_encoder import CEReranker
 
 
 class _HappyPathRetriever:
@@ -71,4 +72,24 @@ def test_query_pipeline_keeps_final_nodes_with_cross_encoder() -> None:
     summary = engine.get_last_progress_summary() or {}
     assert (summary.get("metadata") or {}).get("final_node_count", 0) > 0
 
+    assert "No results found" not in str(resp)
+
+
+def test_query_pipeline_falls_back_when_ce_fails(monkeypatch) -> None:
+    engine = ParentChildQueryEngineV2(_HappyPathRetriever())
+    ce = CEReranker(model_name="stub/failure")
+    engine._ce = ce  # type: ignore[attr-defined]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("predict exploded")
+
+    monkeypatch.setattr(ce, "_ensure_model", lambda: True)
+    ce.model = type("M", (), {"predict": boom})()  # type: ignore
+
+    resp = engine.query(QueryBundle("who is cupsey?"))
+
+    trace = engine.get_last_trace()
+    assert trace.get("final_kept")
+    summary = engine.get_last_progress_summary() or {}
+    assert (summary.get("metadata") or {}).get("final_node_count", 0) > 0
     assert "No results found" not in str(resp)

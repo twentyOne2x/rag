@@ -11,8 +11,11 @@ except Exception:
     CrossEncoder = None  # optional
 
 from ..config import CFG
+from ..logging_utils import setup_logger
 from ..utils.scoring import recency_decay
 from ..router.video_router import wants_definition  # reuse signal
+
+log = setup_logger("rag_v2.ce")
 
 
 # stale / outdated phrasing we want to downweight if the content is old
@@ -70,7 +73,8 @@ class CEReranker:
         try:
             self.model = CrossEncoder(self._model_name)  # type: ignore
             return True
-        except Exception:
+        except Exception as exc:
+            log.exception("ce[load] failed model=%s; disabling cross-encoder", self._model_name)
             # disable CE on failure to load
             self.enabled = False
             self.model = None
@@ -90,9 +94,15 @@ class CEReranker:
                 continue
             pairs.append((query, text))
         if pairs:
-            scores = self.model.predict(pairs, batch_size=self.batch)  # type: ignore
-            for k, sc in zip([k for k in keys if k not in self._cache], scores):
-                self._cache[k] = float(sc)
+            try:
+                scores = self.model.predict(pairs, batch_size=self.batch)  # type: ignore
+                for k, sc in zip([k for k in keys if k not in self._cache], scores):
+                    self._cache[k] = float(sc)
+            except Exception as exc:
+                log.exception("ce[predict] failed; disabling cross-encoder")
+                self.enabled = False
+                self.model = None
+                return items
         rescored = []
         for (sid, text, _old) in items:
             k = self._h(query, sid)
