@@ -21,9 +21,9 @@ modes:
     prompt:
       quote_min_count: 4
     retrieval:
-      stage1_topn: 160
-      topk_post_rerank: 40
-      ce_min_keep: 20
+      stage1_topn: 80
+      topk_post_rerank: 20
+      ce_min_keep: 10
       max_final_nodes: 12
   deep:
     label: Deep Research

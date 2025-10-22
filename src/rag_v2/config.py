@@ -115,6 +115,7 @@ ENT_CANON_MAP = {
     "rasmr": "Rasmr",
     "rasmer": "Rasmr",
     "rasmur": "Rasmr",
+    "rasmar": "Rasmr",
     "orangie": "Orangie",
     "orangy": "Orangie",
     "orangey": "Orangie",
