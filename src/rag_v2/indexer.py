@@ -1,10 +1,4 @@
-"""Pinecone index helpers for rag_v2.
-
-This module centralises all Pinecone index lifecycle logic so we no longer
-depend on the old `Llama_index_sandbox` package.  It supports both loading an
-existing index for inference and (optionally) rebuilding an index from a set of
-nodes when running ingestion jobs.
-"""
+"""Vector index helpers for rag_v2 (Qdrant + Pinecone)."""
 
 from __future__ import annotations
 
@@ -13,12 +7,30 @@ import os
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.vector_stores.pinecone import PineconeVectorStore
-from pinecone import Pinecone, ServerlessSpec
+
+try:
+    from llama_index.vector_stores.pinecone import PineconeVectorStore
+except Exception:  # pragma: no cover - optional dependency for pinecone mode
+    PineconeVectorStore = None  # type: ignore
+
+try:
+    from pinecone import Pinecone, ServerlessSpec
+except Exception:  # pragma: no cover - optional dependency for pinecone mode
+    Pinecone = None  # type: ignore
+    ServerlessSpec = None  # type: ignore
+
+try:
+    from llama_index.vector_stores.qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models as qm
+except Exception:  # pragma: no cover - optional dependency for qdrant mode
+    QdrantVectorStore = None  # type: ignore
+    QdrantClient = None  # type: ignore
+    qm = None  # type: ignore
 
 # Load local dotenv when not running on Cloud Run ---------------------------------
 
@@ -60,7 +72,13 @@ def timeit(func):
     return wrapper
 
 
-def _pinecone_client() -> Pinecone:
+def _backend() -> str:
+    return (os.getenv("VECTOR_STORE", "pinecone") or "pinecone").strip().lower()
+
+
+def _pinecone_client() -> Any:
+    if Pinecone is None:
+        raise RuntimeError("Pinecone dependencies are not installed")
     api_key = os.environ.get("PINECONE_API_KEY")
     if not api_key:
         raise RuntimeError("PINECONE_API_KEY env var is required")
@@ -75,14 +93,41 @@ def _namespace() -> str:
     return os.environ.get("PINECONE_NAMESPACE", DEFAULT_NAMESPACE)
 
 
-def _service_context():
-    """Ensure legacy code paths use a 3072-dim embedder."""
+def _qdrant_collection_name(namespace: str) -> str:
+    index_name = _index_name()
+    template = os.getenv("QDRANT_COLLECTION_TEMPLATE", "{index}__{namespace}")
+    return template.format(index=index_name, namespace=namespace)
 
+
+def _qdrant_client() -> Any:
+    if QdrantClient is None:
+        raise RuntimeError("Qdrant dependencies are not installed")
+    return QdrantClient(
+        url=os.getenv("QDRANT_URL", "http://qdrant:6333"),
+        api_key=os.getenv("QDRANT_API_KEY") or None,
+    )
+
+
+def _ensure_qdrant_collection(client: Any, collection_name: str, dimension: int) -> None:
+    exists = False
     try:
-        embed_model = OpenAIEmbedding(model="text-embedding-3-large")
-        return Settings.llm and Settings
+        exists = bool(client.collection_exists(collection_name=collection_name))
     except Exception:
-        return None
+        names = {item.name for item in client.get_collections().collections}
+        exists = collection_name in names
+
+    if exists:
+        return
+
+    if qm is None:
+        raise RuntimeError("qdrant-client models are unavailable")
+
+    logging.info("Creating Qdrant collection %s (dim=%d)", collection_name, dimension)
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=qm.VectorParams(size=dimension, distance=qm.Distance.COSINE),
+        hnsw_config=qm.HnswConfigDiff(m=16, ef_construct=128),
+    )
 
 
 @timeit
@@ -91,8 +136,23 @@ def ensure_index(
     metric: str = DEFAULT_METRIC,
     *,
     delete_existing: bool = False,
-) -> PineconeVectorStore:
-    """Create (or re-create) the Pinecone index backing rag_v2."""
+) -> Any:
+    """Create (or re-create) the configured vector index backing rag_v2."""
+
+    backend = _backend()
+
+    if backend == "qdrant":
+        client = _qdrant_client()
+        collection_name = _qdrant_collection_name(_namespace())
+        if delete_existing:
+            try:
+                client.delete_collection(collection_name=collection_name)
+            except Exception:
+                pass
+        _ensure_qdrant_collection(client, collection_name, dimension)
+        if QdrantVectorStore is None:
+            raise RuntimeError("Qdrant vector store adapter is not installed")
+        return QdrantVectorStore(client=client, collection_name=collection_name)
 
     client = _pinecone_client()
     index_name = _index_name()
@@ -104,6 +164,8 @@ def ensure_index(
     existing = {item["name"] for item in client.list_indexes().get("indexes", [])}
     if index_name not in existing:
         logging.info("Creating Pinecone index %s (dim=%d metric=%s)", index_name, dimension, metric)
+        if ServerlessSpec is None:
+            raise RuntimeError("Pinecone ServerlessSpec is unavailable")
         client.create_index(
             name=index_name,
             dimension=dimension,
@@ -111,11 +173,14 @@ def ensure_index(
             spec=ServerlessSpec(cloud="aws", region="us-west-2"),
         )
 
+    if PineconeVectorStore is None:
+        raise RuntimeError("Pinecone vector store adapter is not installed")
+
     vector_store = PineconeVectorStore(pinecone_index=client.Index(index_name), namespace=_namespace())
     return vector_store
 
 
-def _force_namespace(store: PineconeVectorStore, namespace: str) -> None:
+def _force_namespace(store: Any, namespace: str) -> None:
     if hasattr(store, "set_namespace"):
         store.set_namespace(namespace)
     elif hasattr(store, "namespace"):
@@ -125,19 +190,32 @@ def _force_namespace(store: PineconeVectorStore, namespace: str) -> None:
 
 
 @timeit
-def load_vector_store(*, namespace: Optional[str] = None) -> PineconeVectorStore:
-    """Attach to the configured Pinecone index and return a vector store."""
+def load_vector_store(*, namespace: Optional[str] = None) -> Any:
+    """Attach to the configured index and return a vector store."""
+
+    backend = _backend()
+    ns = namespace or _namespace()
+
+    if backend == "qdrant":
+        client = _qdrant_client()
+        collection_name = _qdrant_collection_name(ns)
+        _ensure_qdrant_collection(client, collection_name, DEFAULT_DIMENSION)
+        if QdrantVectorStore is None:
+            raise RuntimeError("Qdrant vector store adapter is not installed")
+        return QdrantVectorStore(client=client, collection_name=collection_name)
 
     client = _pinecone_client()
     index_name = _index_name()
-    store = PineconeVectorStore(pinecone_index=client.Index(index_name), namespace=namespace or _namespace())
-    _force_namespace(store, namespace or _namespace())
+    if PineconeVectorStore is None:
+        raise RuntimeError("Pinecone vector store adapter is not installed")
+    store = PineconeVectorStore(pinecone_index=client.Index(index_name), namespace=ns)
+    _force_namespace(store, ns)
     return store
 
 
 @timeit
 def load_index(namespace: Optional[str] = None) -> VectorStoreIndex:
-    """Load the Pinecone-backed VectorStoreIndex for inference."""
+    """Load the configured VectorStoreIndex for inference."""
 
     store = load_vector_store(namespace=namespace)
 
@@ -165,10 +243,10 @@ def rebuild_index(
     metric: str = DEFAULT_METRIC,
     namespace: Optional[str] = None,
 ) -> VectorStoreIndex:
-    """Replace the Pinecone index contents with ``nodes`` and return it."""
+    """Replace vector index contents with ``nodes`` and return it."""
 
     store = ensure_index(dimension=dimension, metric=metric, delete_existing=True)
-    if namespace:
+    if namespace and _backend() == "pinecone":
         _force_namespace(store, namespace)
     store.add(nodes)
 

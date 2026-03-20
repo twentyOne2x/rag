@@ -9,6 +9,26 @@ def canon_entity(s: str) -> str:
     key = s.strip().lower()
     return ENT_CANON_MAP.get(key, s)
 
+def canon_entity_key(s: str) -> str:
+    """
+    Canonical key for entity matching.
+
+    This is intentionally case-insensitive and stable: callers that need to
+    compare entities (gates/filters/overlap math) should use this instead of
+    `canon_entity()`, which preserves original casing for unknown entities.
+    """
+    if not s:
+        return ""
+    key = s.strip().lower()
+    canonical = ENT_CANON_MAP.get(key, key)
+    out = (canonical or "").strip().lower()
+
+    # Equivalence classes for matching (keep display canonicalization separate).
+    # Example: many transcripts mention "SOL" rather than "Solana".
+    if out in ("solana", "sol"):
+        return "sol"
+    return out
+
 
 def canon_entities(ents: Iterable[str]) -> List[str]:
     """Canonicalize a list of entities."""

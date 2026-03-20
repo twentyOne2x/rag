@@ -58,6 +58,10 @@ def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
         "using the video's official title (omit any date/ID prefixes) as the link text, "
         "e.g., [Some Talk Title](URL?t=START_SECONDSs). "
     )
+    grounding_hint = (
+        " Use only retrieved transcript evidence for definitions. "
+        "If sources present multiple meanings for a term/acronym, explicitly call out ambiguity and list each meaning instead of choosing one as definitive. "
+    )
 
     enriched_q = (
         query
@@ -65,6 +69,7 @@ def search_videos_and_clips(query: str, top_k: Optional[int] = None) -> str:
         + "Answer thoroughly using multiple distinct passages. "
         f"Provide ≥{CFG.quote_min_count} citations; for each citation, quote 2–3 sentences (≈120–300 chars) verbatim, including 1 sentence of lead‑in and 1 of follow‑through when helpful, and include each clip's timestamp range in parentheses. "
         + cite_hint
+        + grounding_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
         "When quoting, attribute to the named speaker if metadata provides one "

@@ -9,8 +9,10 @@ WORKDIR /app
 # requirements first → better cache
 COPY requirements.txt ./requirements.txt
 
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt \
+# NOTE: compose builds multiple images in parallel; avoid apt cache contention by using
+# a unique cache id for this image and locking sharing mode.
+RUN --mount=type=cache,id=icmfyi-rag-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=icmfyi-rag-apt-lib,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*

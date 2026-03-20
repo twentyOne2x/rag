@@ -21,7 +21,7 @@ from .rerankers.cross_encoder import CEReranker
 from .postprocessors.entity_canonicalizer import EntityCanonicalizer  # NEW
 from .postprocessors.entity_utils import normalize_text_entities  # NEW
 from .router.video_router import TICKER_RE, HANDLE_RE
-from .postprocessors.entity_utils import canon_entity
+from .postprocessors.entity_utils import canon_entity, canon_entity_key
 from .logging_utils import (
     setup_logger,
     pretty,
@@ -35,6 +35,7 @@ from .router.video_router import wants_definition
 from .instrumentation import AppDiagnostics, ProgressRecorder, ProgressEvent
 from .telemetry import TelemetryCollector, JsonlTelemetryWriter
 from .settings import config_value
+from .utils.youtube_metadata import fetch_video_metadata
 
 log = setup_logger("rag_v2.qe")
 
@@ -136,19 +137,60 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             md = n.node.metadata or {}
             start_hms = md.get("start_hms")
             start_seconds = self._hms_to_seconds(start_hms) if start_hms else None
-            video_id = md.get("parent_id") or md.get("video_id")
+            video_id = md.get("video_id") or md.get("parent_id")
+
+            def _to_float(value: Any) -> Optional[float]:
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except Exception:
+                    return None
+
+            # Prefer parent-level dates when segment metadata is missing.
+            published_at = (
+                md.get("published_at")
+                or md.get("published_date")
+                or md.get("parent_published_at")
+                or md.get("parent_published_date")
+                or md.get("date")
+            )
+            duration_s = md.get("parent_duration_s") or md.get("duration_s") or md.get("duration")
+            duration_s_f = _to_float(duration_s)
+
+            url = md.get("url") or md.get("parent_url")
+            clip_url = md.get("clip_url") or url
+            thumbnail_url = md.get("thumbnail_url") or md.get("parent_thumbnail_url")
+            if not thumbnail_url and video_id:
+                # Best-effort fallback for YouTube sources.
+                thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+            # Display enrichment: if Qdrant payloads are missing publish/duration metadata,
+            # use YouTube Data API (when configured) to improve the UI without forcing
+            # a full re-ingest/backfill.
+            if video_id and (not published_at or duration_s_f is None):
+                yt_meta = fetch_video_metadata(str(video_id))
+                if yt_meta:
+                    published_at = published_at or yt_meta.get("published_at")
+                    if duration_s_f is None:
+                        duration_s_f = _to_float(yt_meta.get("duration_s"))
+                    thumbnail_url = thumbnail_url or yt_meta.get("thumbnail_url") or thumbnail_url
             view.update(
                 {
-                    "url": md.get("clip_url") or md.get("url"),
-                    "clip_url": md.get("clip_url") or md.get("url"),
-                    "title": md.get("title"),
-                    "channel_name": md.get("channel_name"),
-                    "channel_id": md.get("channel_id"),
+                    # `url` should be the canonical watch URL; `clip_url` can include the timestamp.
+                    "url": url or clip_url,
+                    "clip_url": clip_url or url,
+                    "title": md.get("title") or md.get("parent_title"),
+                    "channel_name": md.get("channel_name") or md.get("parent_channel_name"),
+                    "channel_id": md.get("channel_id") or md.get("parent_channel_id"),
                     "parent_id": video_id,
                     "video_id": video_id,
                     "start_hms": start_hms,
                     "end_hms": md.get("end_hms"),
                     "start_seconds": start_seconds,
+                    "duration_s": duration_s_f,
+                    "published_at": published_at,
+                    "thumbnail_url": thumbnail_url,
                 }
             )
             out.append(view)
@@ -421,13 +463,222 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             return cfg.max_final_nodes
         return min(10, cfg.max_final_nodes)
 
+    @staticmethod
+    def _user_query_head(q: str) -> str:
+        if not q:
+            return ""
+        for line in q.splitlines():
+            clean = line.strip()
+            if clean:
+                return clean
+        return q.strip()
+
+    def _extract_definition_target(self, q: str) -> Optional[str]:
+        head = self._user_query_head(q)
+        if not head:
+            return None
+
+        patterns = [
+            re.compile(r"\bwhat\s+does\s+([@$]?[A-Za-z][A-Za-z0-9_-]{1,31})\s+mean\b", re.IGNORECASE),
+            re.compile(r"\bwhat(?:['’]s|\s+is)\s+([@$]?[A-Za-z][A-Za-z0-9_-]{1,31})\b", re.IGNORECASE),
+            re.compile(r"\bwho(?:['’]s|\s+is)\s+([@]?[A-Za-z][A-Za-z0-9_-]{1,31})\b", re.IGNORECASE),
+        ]
+        for pat in patterns:
+            m = pat.search(head)
+            if m:
+                return m.group(1).strip()
+
+        acronyms = re.findall(r"\b[A-Z][A-Z0-9]{1,15}\b", head)
+        if len(acronyms) == 1:
+            return acronyms[0]
+        return None
+
+    @staticmethod
+    def _normalize_definition_candidate(raw: str) -> Optional[str]:
+        candidate = (raw or "").strip()
+        if not candidate:
+            return None
+        candidate = re.sub(r"\s+", " ", candidate)
+        candidate = candidate.strip(" \t\r\n`'\".,;:()[]{}")
+        if not candidate:
+            return None
+        if len(candidate) > 120:
+            return None
+        if len(candidate.split()) > 12:
+            return None
+
+        low = candidate.lower()
+        if "solana improvement document" in low:
+            return "Solana Improvement Documents"
+        if "single instruction multiple data" in low:
+            return "Single Instruction, Multiple Data"
+        return candidate
+
+    def _extract_definition_candidates(
+        self,
+        target: str,
+        nodes: List[NodeWithScore],
+    ) -> List[Dict[str, Any]]:
+        target = (target or "").strip()
+        if not target:
+            return []
+
+        target_rx = re.compile(re.escape(target), re.IGNORECASE)
+        forward_rx = re.compile(
+            rf"\b{re.escape(target)}\b\s+(?:stands\s+for|means|is\s+short\s+for)\s+([^.;:\n]{{3,140}})",
+            re.IGNORECASE,
+        )
+        reverse_short_rx = re.compile(
+            rf"\b([^.;:\n]{{3,140}}?)\s+or\s+{re.escape(target)}\s+for\s+short\b",
+            re.IGNORECASE,
+        )
+        paren_rx = re.compile(
+            rf"\b([^.;:\n]{{3,140}}?)\s*\(\s*{re.escape(target)}\s*\)",
+            re.IGNORECASE,
+        )
+        numbered_acronym_rx = re.compile(
+            rf"\b{re.escape(target)}[- ]?\d{{2,4}}\b",
+            re.IGNORECASE,
+        )
+        proposal_rx = re.compile(
+            rf"\b{re.escape(target)}\b\s+(?:proposal|proposals)\b",
+            re.IGNORECASE,
+        )
+
+        seen: Set[str] = set()
+        out: List[Dict[str, Any]] = []
+
+        def add_candidate(raw_candidate: str, node: NodeWithScore) -> None:
+            normalized = self._normalize_definition_candidate(raw_candidate)
+            if not normalized:
+                return
+            key = re.sub(r"[^a-z0-9]+", "", normalized.lower())
+            if not key or key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "meaning": normalized,
+                    "node": node,
+                }
+            )
+
+        for nws in nodes:
+            md = nws.node.metadata or {}
+            try:
+                txt = nws.node.get_content() or ""
+            except Exception:
+                txt = getattr(nws.node, "text", "") or ""
+            if not txt or not target_rx.search(txt):
+                continue
+
+            for m in forward_rx.finditer(txt):
+                add_candidate(m.group(1), nws)
+            for m in reverse_short_rx.finditer(txt):
+                # Keep only the nearest phrase after the last comma if the match is long.
+                cand = m.group(1).split(",")[-1].strip()
+                add_candidate(cand, nws)
+            for m in paren_rx.finditer(txt):
+                add_candidate(m.group(1), nws)
+
+            low = txt.lower()
+            title_low = str(md.get("title") or md.get("parent_title") or "").lower()
+            channel_low = str(md.get("channel_name") or md.get("parent_channel_name") or "").lower()
+            if "solana improvement document" in low:
+                add_candidate("Solana Improvement Documents", nws)
+            if "single instruction multiple data" in low:
+                add_candidate("Single Instruction, Multiple Data", nws)
+            if (
+                ("solana" in low or "solana" in title_low or "solana" in channel_low)
+                and (
+                    numbered_acronym_rx.search(low)
+                    or numbered_acronym_rx.search(title_low)
+                    or proposal_rx.search(low)
+                )
+            ):
+                add_candidate("Solana Improvement Documents", nws)
+
+        return out
+
+    def _maybe_build_acronym_disambiguation_response(
+        self,
+        q: str,
+        nodes: List[NodeWithScore],
+    ) -> Tuple[Optional[Response], Optional[Dict[str, Any]]]:
+        if not wants_definition(q):
+            return None, None
+        target = self._extract_definition_target(q)
+        if not target:
+            return None, None
+
+        candidates = self._extract_definition_candidates(target, nodes)
+        if len(candidates) < 2:
+            return None, None
+
+        norm_target = target.upper() if re.fullmatch(r"[A-Za-z0-9_-]{2,20}", target) else target
+        lines = [
+            f"`{norm_target}` is ambiguous in the retrieved transcripts and appears with multiple meanings:",
+        ]
+        for idx, cand in enumerate(candidates, 1):
+            lines.append(f"{idx}. **{cand['meaning']}**")
+
+        solana_cand = next(
+            (c["meaning"] for c in candidates if "solana improvement document" in c["meaning"].lower()),
+            None,
+        )
+        if solana_cand:
+            lines.append(
+                f"If you mean Solana governance/changelog context, `{norm_target}` = **{solana_cand}**."
+            )
+        lines.append("Specify the context and I will answer using only that sense.")
+
+        source_nodes = [c["node"] for c in candidates]
+        text = append_sources_block("\n".join(lines), source_nodes)
+        response = Response(text, source_nodes=source_nodes)
+        debug = {
+            "target": norm_target,
+            "candidate_count": len(candidates),
+            "candidates": [c["meaning"] for c in candidates],
+        }
+        return response, debug
+
     def _qents(self, q: str) -> set[str]:
-        ents = set(m.group(0).strip() for m in TICKER_RE.finditer(q))
-        ents |= set(m.group(0).strip() for m in HANDLE_RE.finditer(q))
-        for tok in re.findall(r"[A-Za-z][A-Za-z0-9._-]{2,}", q):
-            ce = canon_entity(tok)
-            if ce: ents.add(ce)
-        return {e.lower() for e in ents if not e.startswith("$")}
+        # Entities used for overlap gating (case-insensitive canonical keys).
+        # Note: this is intentionally conservative; it filters common stopwords so
+        # "who is ..." doesn't require matching "who" in metadata.
+        user_q = self._user_query_head(q)
+        stop = {
+            "the", "a", "an", "to", "of", "and", "for", "in", "on", "with", "about",
+            "is", "are", "was", "were", "be", "been", "being",
+            "what", "who", "why", "how", "does", "did",
+            "i", "me", "my", "we", "our", "you", "your", "they", "their",
+            "this", "that", "these", "those",
+            "a", "b", "c",  # common diarization speaker labels
+        }
+        ents: set[str] = set()
+
+        # Tick/handle patterns
+        for m in TICKER_RE.finditer(user_q):
+            tok = m.group(0).strip()
+            key = canon_entity_key(tok)
+            if key:
+                ents.add(key.lstrip("$"))  # normalize $BTC -> btc
+        for m in HANDLE_RE.finditer(user_q):
+            tok = m.group(0).strip()
+            key = canon_entity_key(tok)
+            if key:
+                ents.add(key)
+
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9._-]{2,}", user_q):
+            key = canon_entity_key(tok)
+            if not key:
+                continue
+            if key in stop:
+                continue
+            ents.add(key)
+
+        # We store overlap keys without leading '$' to match metadata entities.
+        return {e for e in ents if e and not e.startswith("$")}
 
     def _maybe_early_abort_stage1(self, q: str, nodes: List[NodeWithScore]) -> Response | None:
         """Cheap pre-CE gate: low top score AND little entity overlap."""
@@ -450,12 +701,46 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
 
         qents = self._qents(q)
         rel = 0
+        text_rel = 0
+        text_patterns = None
+        if qents:
+            text_patterns = []
+            for e in sorted(qents):
+                if not e:
+                    continue
+                if e.startswith("@"):
+                    text_patterns.append(re.compile(re.escape(e), re.IGNORECASE))
+                else:
+                    # Use word boundaries to avoid substring noise.
+                    text_patterns.append(re.compile(rf"\b{re.escape(e)}\b", re.IGNORECASE))
         for n in nodes:
             md = n.node.metadata or {}
             ents = {str(e).lower() for e in (md.get("entities") or [])}
             ents |= {str(e).lower() for e in (md.get("canonical_entities") or [])}
             if ents & qents:
                 rel += 1
+            if text_patterns:
+                try:
+                    txt = n.node.get_content() or ""
+                except Exception:
+                    txt = getattr(n.node, "text", "") or ""
+                if txt and any(p.search(txt) for p in text_patterns):
+                    text_rel += 1
+
+        # For definition-style queries, require at least one explicit entity hit in retrieved
+        # evidence (metadata OR raw text). Otherwise we often show semantically-similar but
+        # irrelevant sources for unknown entities (e.g., "Who is <random handle>?").
+        if wants_definition(q) and getattr(cfg, "def_require_entity_hit", False) and rel == 0 and text_rel == 0:
+            self._last_abort_details = {
+                "stage": "retrieve",
+                "reason": "def_entity_miss",
+                "top_score": top,
+                "query_entities": sorted(qents),
+                "meta_hits": rel,
+                "text_hits": text_rel,
+            }
+            log.info("qe[early-abort] q='%s' reason=def_entity_miss top=%.4f", q, top)
+            return Response(cfg.abort_message, source_nodes=[])
         if top < cfg.stage1_top_min and rel < cfg.stage1_min_relevant:
             self._last_abort_details = {
                 "stage": "retrieve",
@@ -1057,6 +1342,32 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                 return Response(cfg_runtime.abort_message, source_nodes=[])
 
         trace["final_kept"] = self._final_sources_view(nodes)
+
+        acronym_resp, acronym_dbg = self._maybe_build_acronym_disambiguation_response(q, nodes)
+        if acronym_resp is not None:
+            progress.add_event(
+                "synthesize",
+                status="completed",
+                label="Writing final answer (rule-based acronym disambiguation)",
+                metadata=acronym_dbg or {},
+            )
+            progress.add_event(
+                "validate_answer",
+                status="not_implemented",
+                label="Final validation step (post-answer checks)",
+            )
+            trace["definition_disambiguation"] = acronym_dbg
+            trace["final_text"] = str(acronym_resp)
+            summary = self._finalize_trace(trace, progress)
+            log.debug(pretty(trace))
+            log.info(
+                "qe[acronym-disambiguation] [%s] q='%s' target=%s candidates=%d",
+                summary["request_id"],
+                q,
+                (acronym_dbg or {}).get("target"),
+                int((acronym_dbg or {}).get("candidate_count") or 0),
+            )
+            return acronym_resp
 
         # Optionally prepend parent summaries as additional context
         if getattr(cfg_runtime, "enable_parent_summary_context", True):
