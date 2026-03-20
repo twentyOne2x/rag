@@ -4,17 +4,35 @@ import re
 from typing import Dict, Any, Tuple, Set
 
 # re-use your existing patterns/helpers
-ROUTER_RE = re.compile(r"^(what is|who is|what['’]s|who['’]s|how does|why\b)", re.I)
+ROUTER_RE = re.compile(
+    r"^(what is|what does|who is|what['’]s|who['’]s|how does|why\b)",
+    re.I,
+)
 TICKER_RE = re.compile(r"(?:^|\s)\$[A-Z0-9]{2,6}\b")
 HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,30}\b")
+ACRONYM_ONLY_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
+DEF_FUZZ_RE = re.compile(r"\b(define|meaning of|stands for)\b", re.I)
 
 _STOP = {"the","a","an","to","of","and","for","in","on","with","about","vs","from","is","are","how","what","who","why"}
 
 def wants_definition(query: str) -> bool:
-    q = query.strip()
+    raw = (query or "").strip()
+    q = ""
+    for line in raw.splitlines():
+        clean = line.strip()
+        if clean:
+            q = clean
+            break
+    if not q:
+        q = raw
+    q = re.sub(r"[?!.]+$", "", q).strip()
     if ROUTER_RE.search(q):
         return True
     if TICKER_RE.search(q) or HANDLE_RE.search(q):
+        return True
+    if ACRONYM_ONLY_RE.fullmatch(q):
+        return True
+    if DEF_FUZZ_RE.search(q):
         return True
     return False
 

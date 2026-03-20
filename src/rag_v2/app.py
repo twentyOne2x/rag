@@ -3,6 +3,7 @@ import asyncio
 import json
 import queue
 import re
+import time
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterator, List, Optional
@@ -18,6 +19,8 @@ from src.rag_v2.channel_catalog import channel_catalog, channel_names
 from src.rag_v2.settings import config_value, load_config
 from src.rag_v2.config import CFG
 from src.rag_v2.query_engine_v2 import ParentChildQueryEngineV2
+from src.rag_v2.vector_store.parent_catalog import search_parent_catalog, list_recent_parent_catalog
+from src.rag_v2.vector_store.keyword_clips import scan_keyword_clips_qdrant
 
 
 log = setup_logger("rag_v2.app")
@@ -322,6 +325,66 @@ class ChatResp(BaseModel):
     diagnostics: Optional[Dict[str, Any]] = None
 
 
+class CatalogSearchReq(BaseModel):
+    query: str
+    namespace: Optional[str] = None
+    limit: int = 20
+    channel_filter: Optional[ChannelFilter] = None
+    refresh: bool = False
+
+
+class CatalogSearchResp(BaseModel):
+    ok: bool
+    namespace: str
+    query: str
+    results: List[Dict[str, Any]]
+
+
+class CatalogRecentReq(BaseModel):
+    namespace: Optional[str] = None
+    limit: int = 50
+    since: Optional[str] = None  # YYYY-MM-DD (or ISO; date prefix used)
+    cursor: Optional[str] = None
+    channel_filter: Optional[ChannelFilter] = None
+    refresh: bool = False
+
+
+class CatalogRecentResp(BaseModel):
+    ok: bool
+    namespace: str
+    since: Optional[str] = None
+    scanned: int
+    matched: int
+    returned: int
+    next_cursor: Optional[str] = None
+    exhausted: bool
+    results: List[Dict[str, Any]]
+
+
+class KeywordClipsReq(BaseModel):
+    query: str
+    phrases: Optional[List[str]] = None
+    namespace: Optional[str] = None
+    limit: int = 200
+    offset: Optional[str] = None
+    channel_filter: Optional[ChannelFilter] = None
+
+
+class KeywordClipsResp(BaseModel):
+    ok: bool
+    namespace: str
+    query: str
+    match_phrases_norm: List[str]
+    match_tokens_norm: List[str]
+    scanned: int
+    matched: int
+    unique_parents: int
+    unique_speakers: int
+    next_offset: Optional[str] = None
+    exhausted: bool
+    results: List[Dict[str, Any]]
+
+
 def _requested_mode(req: ChatReq) -> Optional[str]:
     return req.research_mode or req.mode
 
@@ -332,6 +395,84 @@ def channels(scope: str = Query(default="videos", min_length=1)) -> ChannelsResp
     catalog = [ChannelInfo(**entry) for entry in channel_catalog(normalized_scope)]
     defaults = [entry.name for entry in catalog]
     return ChannelsResp(scope=normalized_scope, channels=catalog, default_selected=defaults)
+
+
+@app.post("/catalog/search", response_model=CatalogSearchResp)
+def catalog_search(req: CatalogSearchReq) -> CatalogSearchResp:
+    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+    channel_filter_payload: Optional[Dict[str, List[str]]] = None
+    if req.channel_filter:
+        channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+    results = search_parent_catalog(
+        query=req.query,
+        namespace=namespace,
+        limit=req.limit,
+        channel_filter=channel_filter_payload,
+        force_refresh=bool(req.refresh),
+    )
+    return CatalogSearchResp(ok=True, namespace=namespace, query=req.query, results=results)
+
+
+@app.post("/catalog/recent", response_model=CatalogRecentResp)
+def catalog_recent(req: CatalogRecentReq) -> CatalogRecentResp:
+    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+    channel_filter_payload: Optional[Dict[str, List[str]]] = None
+    if req.channel_filter:
+        channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+
+    res = list_recent_parent_catalog(
+        namespace=namespace,
+        limit=req.limit,
+        since=req.since,
+        cursor=req.cursor,
+        channel_filter=channel_filter_payload,
+        force_refresh=bool(req.refresh),
+    )
+    return CatalogRecentResp(
+        ok=True,
+        namespace=namespace,
+        since=res.get("since"),
+        scanned=int(res.get("scanned") or 0),
+        matched=int(res.get("matched") or 0),
+        returned=int(res.get("returned") or 0),
+        next_cursor=res.get("next_cursor"),
+        exhausted=bool(res.get("exhausted")),
+        results=list(res.get("results") or []),
+    )
+
+
+@app.post("/clips/keyword", response_model=KeywordClipsResp)
+def clips_keyword(req: KeywordClipsReq) -> KeywordClipsResp:
+    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+
+    channel_filter_payload: Optional[Dict[str, List[str]]] = None
+    if req.channel_filter:
+        channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+
+    limit = int(req.limit or 0)
+    if limit <= 0:
+        raise HTTPException(400, "limit must be > 0 (use the CLI script for no-limit dumps)")
+    if limit > 2000:
+        raise HTTPException(400, "limit too large; cap at 2000 (page using offset)")
+
+    try:
+        res = scan_keyword_clips_qdrant(
+            query=req.query,
+            phrases=req.phrases,
+            namespace=namespace,
+            limit=limit,
+            offset=req.offset,
+            channel_filter=channel_filter_payload,
+        )
+        return KeywordClipsResp(**res)
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/healthz")
@@ -360,6 +501,82 @@ def healthz():
     }
 
 
+_CATALOG_QUERY_RE = re.compile(
+    r"^\s*(?:all|list|show|find|give|what(?:'s| is)|which)?\s*(?:the\s+)?(?:videos|episodes|talks)\s+(?:about|on|regarding|mentioning)\s+(?P<topic>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _format_duration_s(duration_s: Optional[float]) -> Optional[str]:
+    if duration_s is None:
+        return None
+    try:
+        seconds = int(round(float(duration_s)))
+    except Exception:
+        return None
+    if seconds <= 0:
+        return None
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _maybe_catalog_answer(
+    *,
+    message: str,
+    namespace: str,
+    channel_filter: Optional[Dict[str, List[str]]],
+    limit: int = 20,
+) -> Optional[tuple[str, List[Dict[str, Any]]]]:
+    """
+    Lightweight metadata-only listing, for queries like:
+      - "all videos about Anza"
+      - "list videos mentioning firedancer"
+
+    This deliberately does not run an LLM. It returns a ranked list of matching
+    videos based on parent metadata (title/topic/entities/channel).
+    """
+    m = _CATALOG_QUERY_RE.match(message or "")
+    if not m:
+        return None
+
+    topic = (m.group("topic") or "").strip()
+    if not topic:
+        return None
+
+    results = search_parent_catalog(
+        query=topic,
+        namespace=namespace,
+        limit=limit,
+        channel_filter=channel_filter,
+    )
+    if not results:
+        return (
+            f"No matching video metadata found for: {topic}\n\n"
+            "Try a broader term, or ask a content question so I can search inside transcripts.",
+            [],
+        )
+
+    lines: List[str] = [f"Top {min(len(results), limit)} videos about: {topic}"]
+    for idx, row in enumerate(results[:limit], start=1):
+        title = str(row.get("title") or row.get("video_id") or "").strip()
+        channel = str(row.get("channel_name") or "").strip()
+        published_at = str(row.get("published_at") or "").strip()
+        published_at = published_at.split("T", 1)[0] if "T" in published_at else published_at
+        duration = _format_duration_s(row.get("duration_s"))
+        url = str(row.get("url") or "").strip()
+        meta_bits = [b for b in [channel or None, published_at or None, duration or None] if b]
+        meta = f" ({' | '.join(meta_bits)})" if meta_bits else ""
+        if url:
+            lines.append(f"{idx}. {title}{meta}\n{url}")
+        else:
+            lines.append(f"{idx}. {title}{meta}")
+    return "\n".join(lines), results
+
+
 @app.post("/chat", response_model=ChatResp)
 async def chat(req: ChatReq):
     if not req.message:
@@ -368,6 +585,24 @@ async def chat(req: ChatReq):
         raise HTTPException(503, "query engine not initialized")
 
     requested_mode = _requested_mode(req)
+    namespace = config_value("pinecone.namespace", default="videos")
+    channel_filter_payload: Optional[Dict[str, List[str]]] = None
+    if req.channel_filter:
+        channel_filter_payload = req.channel_filter.dict(exclude_none=True)
+        if not channel_filter_payload:
+            channel_filter_payload = None
+
+    catalog = _maybe_catalog_answer(
+        message=req.message,
+        namespace=namespace,
+        channel_filter=channel_filter_payload,
+        limit=20,
+    )
+    if catalog is not None:
+        answer_text, results = catalog
+        # Include raw catalog rows in diagnostics so the frontend can render them later.
+        trace = {"request_id": f"catalog:{int(time.time() * 1000)}", "catalog_results": results}
+        return _build_chat_response(answer_text, None, trace)
 
     try:
         loop = asyncio.get_running_loop()
@@ -522,6 +757,10 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
     score_hint = (
         " If the top candidate sources all score below ~1% similarity, state that the system could not find strong matches instead of synthesising a weak answer."
     )
+    grounding_hint = (
+        " Use only retrieved transcript evidence for definitions. "
+        "If sources present multiple meanings for a term/acronym, explicitly say it is ambiguous and list each meaning instead of choosing one as definitive."
+    )
     return (
         message
         + "\n\n"
@@ -532,6 +771,7 @@ def _enrich_query(message: str, quote_min_count: int, mode_name: str) -> str:
         + confidence_hint
         + deep_structure_hint
         + score_hint
+        + grounding_hint
         + "Prefer stitching adjacent clips from the same video when context helps. "
         "End with a concise takeaway. "
         "When quoting, attribute to the named speaker if metadata provides one "
@@ -577,13 +817,15 @@ def _execute_query(
             channel_filter_payload = None
     if channel_filter_payload:
         scope_for_filter = scope or config_value("pinecone.namespace", default="videos")
+        # Treat the configured channel catalog as an allowlist. Even when callers select "all",
+        # we still want a filter to avoid pulling in unrelated channels that happen to exist in
+        # the vector store.
+        known = set(channel_names(scope_for_filter))
         include_names = channel_filter_payload.get("include_names")
-        if include_names:
-            known = set(channel_names(scope_for_filter))
-            if known and known.issubset(set(include_names)):
-                channel_filter_payload.pop("include_names", None)
-        if channel_filter_payload:
-            qe_kwargs["channel_filter"] = channel_filter_payload
+        if include_names is not None and known:
+            # Preserve caller ordering while ensuring we don't accept arbitrary names.
+            channel_filter_payload["include_names"] = [n for n in include_names if n in known]
+        qe_kwargs["channel_filter"] = channel_filter_payload
 
     query_text = (
         _enrich_query(message, quote_min_count, mode_details["name"])
@@ -639,6 +881,8 @@ def _build_diagnostics(trace: Dict[str, Any]) -> Dict[str, Any]:
         "progress_metadata": trace.get("progress_metadata"),
         "models": trace.get("models"),
         "final_kept": trace.get("final_kept"),
+        "catalog_results": trace.get("catalog_results"),
+        "definition_disambiguation": trace.get("definition_disambiguation"),
         "config": trace.get("config"),
         "early_abort": trace.get("early_abort"),
         "channel_filter": trace.get("channel_filter"),

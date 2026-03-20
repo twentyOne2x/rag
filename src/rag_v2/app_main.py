@@ -32,8 +32,9 @@ def _configure_models() -> None:
     Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
 
 
-def _load_index_from_pinecone():
-    """Attach to the existing Pinecone index via rag_v2.indexer."""
+def _load_index_from_vector_store():
+    """Attach to the configured vector store via rag_v2.indexer."""
+    backend = (os.getenv("VECTOR_STORE", "pinecone") or "pinecone").strip().lower()
     index_name = os.environ.get(
         "PINECONE_INDEX_NAME",
         config_value("pinecone.index_name", default="icmfyi-v2"),
@@ -43,6 +44,7 @@ def _load_index_from_pinecone():
         config_value("pinecone.namespace", default="videos"),
     )
     os.environ.setdefault("PINECONE_INDEX_NAME", index_name)
+    os.environ.setdefault("VECTOR_STORE", backend)
     index = load_index(namespace=namespace)
     os.environ.setdefault("PINECONE_NAMESPACE", namespace)
     return index
@@ -50,7 +52,7 @@ def _load_index_from_pinecone():
 
 def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressRecorder | None = None):
     """
-    Bootstraps the Parent/Child query engine with your Pinecone-backed index.
+    Bootstraps the Parent/Child query engine with the configured vector index.
     Works regardless of how this file is executed.
     """
     profiler = profiler or ProgressRecorder(scope="startup")
@@ -58,9 +60,9 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
     with profiler.step("configure_models", "Configure LLM + embeddings"):
         _configure_models()
 
-    # Attach to Pinecone (inherits Settings.embed_model for query embeddings)
-    with profiler.step("load_index", "Load vector index from Pinecone") as step:
-        index = _load_index_from_pinecone()
+    # Attach to vector index (inherits Settings.embed_model for query embeddings)
+    with profiler.step("load_index", "Load vector index") as step:
+        index = _load_index_from_vector_store()
         idx_name = os.getenv(
             "PINECONE_INDEX_NAME",
             config_value("pinecone.index_name", default="icmfyi-v2"),
@@ -75,6 +77,7 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
             step.metadata.update(
                 {
                     "similarity_top_k": similarity_top_k,
+                    "vector_store": os.getenv("VECTOR_STORE", "pinecone"),
                     "index_name": idx_name,
                     "namespace": namespace,
                 }

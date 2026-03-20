@@ -129,7 +129,11 @@ def node_brief(nws) -> Dict[str, Any]:
         "channel_id": md.get("channel_id"),
         "parent_channel_name": md.get("parent_channel_name"),
         "parent_channel_id": md.get("parent_channel_id"),
-        "text_preview": (text[:280] + "…") if text and len(text) > 280 else text,
+        "text_preview": (
+            (text[: int(os.getenv("TEXT_PREVIEW_MAX_CHARS", "1200"))] + "…")
+            if text and len(text) > int(os.getenv("TEXT_PREVIEW_MAX_CHARS", "1200"))
+            else text
+        ),
     }
 
 

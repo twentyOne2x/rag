@@ -8,7 +8,7 @@ import re
 from ..config import ENT_CANON_MAP
 from ..runtime_config import get_runtime_config
 from ..router.video_router import TICKER_RE, HANDLE_RE, wants_definition
-from ..postprocessors.entity_utils import canon_entity, canon_entities
+from ..postprocessors.entity_utils import canon_entity, canon_entity_key, canon_entities
 from ..utils.scoring import recency_decay, apply_multiplier
 from ..logging_utils import setup_logger, node_brief, _clean_title
 from ..vector_store.parent_resolver import fetch_parent_meta
@@ -43,9 +43,13 @@ class ParentChildRetrieverV2:
           - lc_forms: lowercase forms for overlap math
           - canonical_set: deduped canonical entity names
         """
-        raw = set(m.group(0).strip() for m in TICKER_RE.finditer(q))
-        raw |= set(m.group(0).strip() for m in HANDLE_RE.finditer(q))
-        for tok in re.findall(r"[A-Za-z][A-Za-z0-9._-]{2,}", q):
+        # The app enriches queries with long instruction text. Entity parsing should only
+        # consider the user question head to avoid injecting control words as entities.
+        user_q = (q or "").splitlines()[0].strip() if q else ""
+
+        raw = set(m.group(0).strip() for m in TICKER_RE.finditer(user_q))
+        raw |= set(m.group(0).strip() for m in HANDLE_RE.finditer(user_q))
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9._-]{2,}", user_q):
             ce = canon_entity(tok)
             if not ce:
                 continue
@@ -55,7 +59,12 @@ class ParentChildRetrieverV2:
             lower_tok = tok.strip().lower()
             if lower_tok in ENT_CANON_MAP or ce != tok:
                 raw.add(ce)
-        for tok in re.findall(r"\b[A-Z]{2,}\b", q):
+        # Acronym definitions (e.g. "What does SIMD mean?") should treat the acronym
+        # itself as an entity even if not pre-listed in ENT_CANON_MAP.
+        if wants_definition(user_q):
+            for tok in re.findall(r"\b[A-Z][A-Z0-9]{1,15}\b", user_q):
+                raw.add(tok)
+        for tok in re.findall(r"\b[A-Z]{2,}\b", user_q):
             ce = canon_entity(tok)
             lower_tok = tok.lower()
             if lower_tok in ENT_CANON_MAP or ce != tok:
@@ -68,7 +77,8 @@ class ParentChildRetrieverV2:
                 all_forms.add(e.lower())
             else:
                 all_forms.update({e, e.lower(), e.title()})
-        canonical = set(canon_entities(raw))
+        # Use stable, case-insensitive keys for gating/matching.
+        canonical = {canon_entity_key(e) for e in raw if e and str(e).strip()}
         return all_forms, {x.lower() for x in all_forms if not x.startswith("$")}, canonical
 
     def set_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> None:
@@ -245,38 +255,66 @@ class ParentChildRetrieverV2:
         out: Set[str] = set()
         for source in ("canonical_entities", "entities"):
             for ent in md.get(source) or []:
-                ce = canon_entity(ent)
+                ce = canon_entity_key(ent)
                 if ce:
                     out.add(ce)
         speaker = md.get("speaker")
         if speaker:
-            ce = canon_entity(speaker)
+            ce = canon_entity_key(speaker)
             if ce:
                 out.add(ce)
         channel = md.get("channel_name") or md.get("parent_channel_name")
         if channel:
-            ce = canon_entity(channel)
+            ce = canon_entity_key(channel)
             if ce:
                 out.add(ce)
         return out
 
     def _entity_gate_nodes(self, nodes: List[Any], required: Set[str]) -> Tuple[List[Any], Dict[str, Any]]:
+        required_keys = {canon_entity_key(r) for r in (required or set()) if r}
         debug = {
             "required": sorted(required),
+            "required_keys": sorted(required_keys),
             "applied": bool(required),
             "kept": 0,
             "dropped": 0,
+            "kept_via_metadata": 0,
+            "kept_via_text": 0,
             "dropped_samples": [],
         }
-        if not required:
+        if not required_keys:
             return nodes, debug
+
+        text_patterns: List[re.Pattern] = []
+        for key in sorted(required_keys):
+            if not key:
+                continue
+            if key.startswith("@"):
+                text_patterns.append(re.compile(re.escape(key), re.IGNORECASE))
+            else:
+                text_patterns.append(re.compile(rf"(?<!\w){re.escape(key)}(?!\w)", re.IGNORECASE))
+
         kept: List[Any] = []
         dropped_meta: List[Dict[str, Any]] = []
         for n in nodes:
             md = n.node.metadata or {}
             ents = self._canonical_entities_from_metadata(md)
-            if required.issubset(ents):
+            matched_metadata = required_keys.issubset(ents)
+            matched_text = False
+            if not matched_metadata and text_patterns:
+                try:
+                    txt = n.node.get_content() or ""
+                except Exception:
+                    txt = getattr(n.node, "text", "") or ""
+                if txt and all(p.search(txt) for p in text_patterns):
+                    matched_text = True
+
+            if matched_metadata or matched_text:
                 kept.append(n)
+                if matched_metadata:
+                    debug["kept_via_metadata"] += 1
+                elif matched_text:
+                    debug["kept_via_text"] += 1
             else:
                 dropped_meta.append({
                     "node": node_brief(n),
@@ -409,6 +447,8 @@ class ParentChildRetrieverV2:
                             md["published_at"] = pm["parent_published_at"]
                         if not md.get("url") and pm.get("parent_url"):
                             md["url"] = pm["parent_url"]
+                        if not md.get("parent_duration_s") and pm.get("parent_duration_s") is not None:
+                            md["parent_duration_s"] = pm["parent_duration_s"]
                         if md.get("title"):
                             md["title"] = _clean_title(md["title"])
                         n.node.metadata = md
