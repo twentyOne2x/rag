@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from src.rag_v2.tenancy import (
     EntitlementScope,
+    _load_scope,
     authenticate_gateway,
     enforce_namespace,
     tenant_channel_filter,
@@ -80,6 +81,44 @@ class TenancyTests(unittest.TestCase):
             )
             with self.assertRaises(PermissionError):
                 tenant_channel_filter({"include_names": ["Attacker"]}, scope)
+
+    def test_entitlement_lookup_sets_transaction_local_rls_tenant_first(self):
+        calls = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, query, params):
+                calls.append((" ".join(query.split()), params))
+
+            def fetchall(self):
+                return [("channel-1", "creator", "Creator")]
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def cursor(self):
+                return Cursor()
+
+        tenant_id = "ten_" + "b" * 64
+        with self.production_env(), patch(
+            "src.rag_v2.tenancy.psycopg.connect", return_value=Connection()
+        ):
+            scope = _load_scope(tenant_id)
+
+        self.assertIn("set_config('app.tenant_id'", calls[0][0])
+        self.assertEqual(calls[0][1], (tenant_id,))
+        self.assertIn("tenant_channel_entitlements", calls[1][0])
+        self.assertEqual(calls[1][1], (tenant_id,))
+        self.assertEqual(scope.ids, frozenset({"channel-1", "creator"}))
 
 
 if __name__ == "__main__":

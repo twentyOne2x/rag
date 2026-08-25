@@ -71,6 +71,7 @@ def _load_scope(tenant_id: str) -> EntitlementScope:
     identifiers: set[str] = set()
     with psycopg.connect(_connection_url(), connect_timeout=5) as connection:
         with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
             cursor.execute(query, (tenant_id,))
             for external_id, handle, display_name in cursor.fetchall():
                 for value in (external_id, handle):
