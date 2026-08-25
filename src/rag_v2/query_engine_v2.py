@@ -185,6 +185,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     "channel_id": md.get("channel_id") or md.get("parent_channel_id"),
                     "parent_id": video_id,
                     "video_id": video_id,
+                    "media_id": md.get("media_id") or md.get("parent_media_id"),
                     "start_hms": start_hms,
                     "end_hms": md.get("end_hms"),
                     "start_seconds": start_seconds,

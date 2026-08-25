@@ -24,6 +24,7 @@ class _HappyPathRetriever:
                 "start_hms": f"00:00:{idx:02d}",
                 "end_hms": f"00:00:{idx+1:02d}",
                 "parent_id": f"parent-{idx}",
+                "media_id": f"0199a100-0000-7000-8000-{idx:012d}",
                 "document_type": "youtube_video",
                 "title": f"title-{idx}",
                 "channel_name": "@stub",
@@ -68,6 +69,7 @@ def test_query_pipeline_keeps_final_nodes_with_cross_encoder() -> None:
 
     trace = engine.get_last_trace()
     assert trace.get("final_kept"), "expected final_kept to contain sources"
+    assert trace["final_kept"][0]["media_id"] == "0199a100-0000-7000-8000-000000000000"
 
     summary = engine.get_last_progress_summary() or {}
     assert (summary.get("metadata") or {}).get("final_node_count", 0) > 0
