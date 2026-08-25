@@ -8,6 +8,8 @@ from src.rag_v2.tenancy import (
     EntitlementScope,
     _load_scope,
     authenticate_gateway,
+    clear_entitlement_cache,
+    entitlement_scope,
     enforce_namespace,
     tenant_channel_filter,
     validate_runtime_config,
@@ -119,6 +121,35 @@ class TenancyTests(unittest.TestCase):
         self.assertIn("tenant_channel_entitlements", calls[1][0])
         self.assertEqual(calls[1][1], (tenant_id,))
         self.assertEqual(scope.ids, frozenset({"channel-1", "creator"}))
+
+    def test_production_entitlements_are_immediately_visible_without_cache_invalidation(self):
+        tenant_id = "ten_" + "b" * 64
+        empty = EntitlementScope(frozenset(), frozenset())
+        granted = EntitlementScope(frozenset({"Creator"}), frozenset({"channel-1"}))
+        clear_entitlement_cache()
+        with self.production_env(), patch(
+            "src.rag_v2.tenancy._load_scope",
+            side_effect=[empty, granted],
+        ) as loader:
+            self.assertTrue(entitlement_scope(tenant_id).empty)
+            self.assertEqual(entitlement_scope(tenant_id), granted)
+        self.assertEqual(loader.call_count, 2)
+
+    def test_empty_entitlement_scope_is_never_cached_when_cache_is_opted_in(self):
+        tenant_id = "ten_" + "b" * 64
+        empty = EntitlementScope(frozenset(), frozenset())
+        granted = EntitlementScope(frozenset({"Creator"}), frozenset({"channel-1"}))
+        clear_entitlement_cache()
+        with self.production_env(), patch.dict(
+            os.environ,
+            {"RAG_ENTITLEMENT_CACHE_SECONDS": "30"},
+        ), patch(
+            "src.rag_v2.tenancy._load_scope",
+            side_effect=[empty, granted],
+        ) as loader:
+            self.assertTrue(entitlement_scope(tenant_id).empty)
+            self.assertEqual(entitlement_scope(tenant_id), granted)
+        self.assertEqual(loader.call_count, 2)
 
 
 if __name__ == "__main__":

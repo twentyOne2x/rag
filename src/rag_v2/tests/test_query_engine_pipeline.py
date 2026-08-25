@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple
 
+import pytest
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 
 from rag_v2.query_engine_v2 import ParentChildQueryEngineV2
 from rag_v2.rerankers.cross_encoder import CEReranker
+from rag_v2.tenancy import TenantAuthorizationBackendError
 
 
 class _HappyPathRetriever:
@@ -174,3 +176,61 @@ def test_query_pipeline_disambiguates_ambiguous_acronym(monkeypatch) -> None:
     assert "ambiguous" in text.lower()
     assert "single instruction" in text.lower()
     assert "solana improvement documents" in text.lower()
+
+
+def test_query_rejects_channel_scope_when_retriever_has_no_filter_setter() -> None:
+    class RetrieverWithoutFilterSetter:
+        def __init__(self) -> None:
+            self.retrieve_calls = 0
+            self.base = self
+            self.similarity_top_k = 2
+
+        def retrieve(self, _query_bundle: QueryBundle) -> List[NodeWithScore]:
+            self.retrieve_calls += 1
+            return [_build_hostile_node()]
+
+    def _build_hostile_node() -> NodeWithScore:
+        node = TextNode(
+            text="secret from an unauthorized channel",
+            id_="hostile-node",
+            metadata={"segment_id": "hostile", "channel_id": "unauthorized"},
+        )
+        return NodeWithScore(node=node, score=1.0)
+
+    retriever = RetrieverWithoutFilterSetter()
+    engine = ParentChildQueryEngineV2(retriever)
+
+    with pytest.raises(TenantAuthorizationBackendError):
+        engine.query(
+            QueryBundle("private channel"),
+            channel_filter={"include_ids": ["allowed-channel"]},
+        )
+
+    assert retriever.retrieve_calls == 0
+    assert engine._active_channel_filter is None
+
+
+def test_query_rejects_channel_scope_when_filter_setter_fails() -> None:
+    class RetrieverWithBrokenFilterSetter(_HappyPathRetriever):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retrieve_calls = 0
+
+        def set_channel_filter(self, _channel_filter) -> None:
+            raise RuntimeError("backend rejected filter")
+
+        def retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+            self.retrieve_calls += 1
+            return super().retrieve(query_bundle)
+
+    retriever = RetrieverWithBrokenFilterSetter()
+    engine = ParentChildQueryEngineV2(retriever)
+
+    with pytest.raises(TenantAuthorizationBackendError):
+        engine.query(
+            QueryBundle("private channel"),
+            channel_filter={"include_ids": ["allowed-channel"]},
+        )
+
+    assert retriever.retrieve_calls == 0
+    assert engine._active_channel_filter is None

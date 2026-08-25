@@ -17,6 +17,10 @@ _CACHE_LOCK = Lock()
 _CACHE: dict[str, tuple[float, "EntitlementScope"]] = {}
 
 
+class TenantAuthorizationBackendError(RuntimeError):
+    """A tenant allowlist could not be enforced by the retrieval backend."""
+
+
 def production_runtime() -> bool:
     return os.getenv("ICMFYI_PRODUCTION") == "1" or os.getenv("ICMFYI_ENV", "").lower() == "production"
 
@@ -86,15 +90,19 @@ def _load_scope(tenant_id: str) -> EntitlementScope:
 def entitlement_scope(tenant_id: str) -> EntitlementScope:
     if not production_runtime():
         return EntitlementScope(frozenset(), frozenset())
-    ttl = max(1, int(os.getenv("RAG_ENTITLEMENT_CACHE_SECONDS", "30")))
+    ttl = max(0, int(os.getenv("RAG_ENTITLEMENT_CACHE_SECONDS", "0")))
     now = time.monotonic()
-    with _CACHE_LOCK:
-        cached = _CACHE.get(tenant_id)
-        if cached and cached[0] > now:
-            return cached[1]
+    if ttl:
+        with _CACHE_LOCK:
+            cached = _CACHE.get(tenant_id)
+            if cached and cached[0] > now:
+                return cached[1]
     scope = _load_scope(tenant_id)
     with _CACHE_LOCK:
-        _CACHE[tenant_id] = (now + ttl, scope)
+        if ttl and not scope.empty:
+            _CACHE[tenant_id] = (now + ttl, scope)
+        else:
+            _CACHE.pop(tenant_id, None)
     return scope
 
 

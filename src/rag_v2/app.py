@@ -22,6 +22,7 @@ from src.rag_v2.query_engine_v2 import ParentChildQueryEngineV2
 from src.rag_v2.vector_store.parent_catalog import search_parent_catalog, list_recent_parent_catalog
 from src.rag_v2.vector_store.keyword_clips import scan_keyword_clips_qdrant
 from src.rag_v2.tenancy import (
+    TenantAuthorizationBackendError,
     authenticate_gateway,
     enforce_namespace,
     entitlement_scope,
@@ -715,6 +716,8 @@ async def chat(req: ChatReq, request: Request):
         return _build_chat_response(answer_text, formatted_metadata, trace)
     except EngineUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except TenantAuthorizationBackendError as exc:
+        raise HTTPException(503, "tenant authorization filter is unavailable") from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -747,6 +750,8 @@ async def chat_simple(req: ChatReq, request: Request):
         return _build_chat_response(answer_text, formatted_metadata, trace)
     except EngineUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except TenantAuthorizationBackendError as exc:
+        raise HTTPException(503, "tenant authorization filter is unavailable") from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -801,6 +806,14 @@ async def chat_stream(req: ChatReq, request: Request):
             )
         except EngineUnavailableError as exc:
             enqueue({"type": "error", "error": str(exc)})
+        except TenantAuthorizationBackendError:
+            enqueue(
+                {
+                    "type": "error",
+                    "error": "tenant authorization filter is unavailable",
+                    "code": "tenant_authorization_unavailable",
+                }
+            )
         except Exception as exc:
             enqueue({"type": "error", "error": str(exc)})
         finally:
