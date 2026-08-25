@@ -5,8 +5,9 @@ import sys
 from pathlib import Path
 
 from llama_index.core import Settings
+from llama_index.core.llms import MockLLM
 from llama_index.llms.openai import OpenAI
-from llama_index.embeddings.openai import OpenAIEmbedding  # <-- ensure 3072D
+from llama_index.embeddings.openai import OpenAIEmbedding
 
 # --- Make imports work whether run as "python src/rag_v2/app_main.py" or "python -m src.rag_v2.app_main" ---
 try:
@@ -24,12 +25,89 @@ from .instrumentation import AppDiagnostics, ProgressRecorder
 from .settings import config_value
 from .indexer import load_index
 
-def _configure_models() -> None:
-    """Configure the LLM + embedder used for inference."""
-    llm_model = config_value("models.llm_primary", default="gpt-4o-mini")
-    embed_model_name = config_value("models.embedding_primary", default="text-embedding-3-large")
-    Settings.llm = OpenAI(model=os.getenv("INFERENCE_MODEL", llm_model))
-    Settings.embed_model = OpenAIEmbedding(model=embed_model_name)
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+def _configure_models() -> dict[str, object]:
+    """Configure and prove the canonical LLM + embedding contract."""
+    production = (
+        os.getenv("ICMFYI_PRODUCTION") == "1"
+        or os.getenv("ICMFYI_ENV", "").lower() == "production"
+    )
+    llm_provider = (os.getenv("RAG_LLM_PROVIDER", "openai") or "openai").strip().lower()
+    llm_model = os.getenv(
+        "RAG_LLM_MODEL",
+        os.getenv(
+            "INFERENCE_MODEL", config_value("models.llm_primary", default="gpt-4o-mini")
+        ),
+    )
+    if llm_provider == "openai":
+        if production and not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OPENAI_API_KEY is required for the configured production RAG LLM"
+            )
+        Settings.llm = OpenAI(model=llm_model)
+    elif llm_provider == "mock" and not production:
+        Settings.llm = MockLLM()
+    else:
+        raise RuntimeError(f"unsupported RAG_LLM_PROVIDER: {llm_provider}")
+
+    embed_provider = (
+        (os.getenv("EMBED_PROVIDER", "sentence-transformers") or "").strip().lower()
+    )
+    embed_model_name = os.getenv(
+        "EMBED_MODEL",
+        config_value("models.embedding_primary", default="Qwen/Qwen3-Embedding-0.6B"),
+    )
+    embed_model_revision = os.getenv("EMBED_MODEL_REVISION", "").strip()
+    embed_dimension = _positive_int_env("EMBED_DIM", 1024)
+    if embed_provider == "sentence-transformers":
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+        if production and not embed_model_revision:
+            raise RuntimeError(
+                "EMBED_MODEL_REVISION is required for sentence-transformers in production"
+            )
+        Settings.embed_model = HuggingFaceEmbedding(
+            model_name=embed_model_name,
+            device=os.getenv("RAG_EMBED_DEVICE", "cpu"),
+            normalize=True,
+            trust_remote_code=False,
+            **({"revision": embed_model_revision} if embed_model_revision else {}),
+        )
+    elif embed_provider == "openai":
+        if production and not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OPENAI_API_KEY is required for the configured production embedding provider"
+            )
+        Settings.embed_model = OpenAIEmbedding(
+            model=embed_model_name,
+            dimensions=embed_dimension,
+        )
+    else:
+        raise RuntimeError(f"unsupported EMBED_PROVIDER: {embed_provider}")
+
+    probe = Settings.embed_model.get_query_embedding("ICMFYI embedding dimension probe")
+    if len(probe) != embed_dimension:
+        raise RuntimeError(
+            f"embedding dimension mismatch: model returned {len(probe)}, expected {embed_dimension}"
+        )
+    return {
+        "llm_provider": llm_provider,
+        "llm_model": llm_model,
+        "embed_provider": embed_provider,
+        "embed_model": embed_model_name,
+        "embed_model_revision": embed_model_revision or None,
+        "embed_dimension": embed_dimension,
+    }
 
 
 def _load_index_from_vector_store():
@@ -50,7 +128,9 @@ def _load_index_from_vector_store():
     return index
 
 
-def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressRecorder | None = None):
+def bootstrap_query_engine_v2(
+    similarity_top_k: int = 50, profiler: ProgressRecorder | None = None
+):
     """
     Bootstraps the Parent/Child query engine with the configured vector index.
     Works regardless of how this file is executed.
@@ -58,7 +138,8 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
     profiler = profiler or ProgressRecorder(scope="startup")
 
     with profiler.step("configure_models", "Configure LLM + embeddings"):
-        _configure_models()
+        model_contract = _configure_models()
+        profiler.metadata["model_contract"] = model_contract
 
     # Attach to vector index (inherits Settings.embed_model for query embeddings)
     with profiler.step("load_index", "Load vector index") as step:
@@ -85,8 +166,24 @@ def bootstrap_query_engine_v2(similarity_top_k: int = 50, profiler: ProgressReco
 
     # Build base retriever, then wrap with ParentChildRetrieverV2
     with profiler.step("build_retriever", "Construct retriever stack") as step:
-        base_retriever = index.as_retriever(similarity_top_k=similarity_top_k, verbose=False)
-        pc_retriever = ParentChildRetrieverV2(base_retriever)
+        base_retriever = index.as_retriever(
+            similarity_top_k=similarity_top_k, verbose=False
+        )
+
+        def filtered_retriever(filters):
+            # LlamaIndex binds metadata filters when constructing a retriever. Creating a
+            # request-owned retriever avoids mutating the pooled engine's shared base
+            # retriever and prevents concurrent tenant scopes from crossing.
+            return index.as_retriever(
+                similarity_top_k=similarity_top_k,
+                verbose=False,
+                filters=filters,
+            )
+
+        pc_retriever = ParentChildRetrieverV2(
+            base_retriever,
+            filtered_retriever_factory=filtered_retriever,
+        )
         if step is not None:
             step.metadata["stage1_top_k"] = similarity_top_k
 

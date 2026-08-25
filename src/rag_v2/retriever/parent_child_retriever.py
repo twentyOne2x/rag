@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 import re
+
+from llama_index.core.vector_stores import (
+    FilterCondition,
+    FilterOperator,
+    MetadataFilter,
+    MetadataFilters,
+)
 
 from ..config import ENT_CANON_MAP
 from ..runtime_config import get_runtime_config
@@ -12,13 +19,15 @@ from ..postprocessors.entity_utils import canon_entity, canon_entity_key, canon_
 from ..utils.scoring import recency_decay, apply_multiplier
 from ..logging_utils import setup_logger, node_brief, _clean_title
 from ..vector_store.parent_resolver import fetch_parent_meta
+from ..tenancy import TenantAuthorizationBackendError
 
 log = setup_logger("rag_v2.retriever")
 
 
 class ParentChildRetrieverV2:
-    def __init__(self, base_retriever):
+    def __init__(self, base_retriever, filtered_retriever_factory: Optional[Callable[[MetadataFilters], Any]] = None):
         self.base = base_retriever
+        self._filtered_retriever_factory = filtered_retriever_factory
         self._last_debug: Dict[str, Any] = {}
         self._channel_filter: Optional[Dict[str, List[str]]] = None
         self._entity_requirements: Optional[Set[str]] = None
@@ -113,7 +122,13 @@ class ParentChildRetrieverV2:
             out.append(s)
         return out
 
-    def _build_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    @staticmethod
+    def _filter_debug(filters: Optional[MetadataFilters]) -> Optional[Dict[str, Any]]:
+        if filters is None:
+            return None
+        return filters.model_dump(mode="json")
+
+    def _build_channel_filter(self, channel_filter: Optional[Dict[str, List[str]]]) -> Tuple[Optional[MetadataFilters], Dict[str, Any]]:
         debug = {
             "requested": channel_filter,
             "expr": None,
@@ -122,8 +137,8 @@ class ParentChildRetrieverV2:
         if not channel_filter:
             return None, debug
 
-        include_clauses: List[Dict[str, Any]] = []
-        exclude_clauses: List[Dict[str, Any]] = []
+        include_clauses: List[MetadataFilter] = []
+        exclude_clauses: List[MetadataFilter] = []
 
         inc_ids = self._dedupe_clean(channel_filter.get("include_ids"))
         inc_names = self._dedupe_clean(channel_filter.get("include_names"))
@@ -131,51 +146,55 @@ class ParentChildRetrieverV2:
         exc_names = self._dedupe_clean(channel_filter.get("exclude_names"))
 
         if inc_ids:
-            include_clauses.append({"channel_id": {"$in": inc_ids}})
+            include_clauses.append(MetadataFilter(key="channel_id", value=inc_ids, operator=FilterOperator.IN))
         if inc_names:
-            include_clauses.append({"channel_name": {"$in": inc_names}})
+            include_clauses.append(MetadataFilter(key="channel_name", value=inc_names, operator=FilterOperator.IN))
 
         if exc_ids:
-            exclude_clauses.append({"channel_id": {"$nin": exc_ids}})
+            exclude_clauses.append(MetadataFilter(key="channel_id", value=exc_ids, operator=FilterOperator.NIN))
         if exc_names:
-            exclude_clauses.append({"channel_name": {"$nin": exc_names}})
+            exclude_clauses.append(MetadataFilter(key="channel_name", value=exc_names, operator=FilterOperator.NIN))
 
-        clauses: List[Dict[str, Any]] = []
+        clauses: List[MetadataFilter | MetadataFilters] = []
         if include_clauses:
-            clauses.append({"$or": include_clauses} if len(include_clauses) > 1 else include_clauses[0])
+            clauses.append(
+                MetadataFilters(filters=include_clauses, condition=FilterCondition.OR)
+                if len(include_clauses) > 1
+                else include_clauses[0]
+            )
         clauses.extend(exclude_clauses)
 
         if not clauses:
             return None, debug
 
-        if len(clauses) == 1:
-            expr = clauses[0]
-        else:
-            expr = {"$and": clauses}
+        expr = MetadataFilters(filters=clauses, condition=FilterCondition.AND)
 
-        debug["expr"] = expr
+        debug["expr"] = self._filter_debug(expr)
         debug["applied"] = True
         return expr, debug
 
     @staticmethod
-    def _merge_filters(filters: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    def _merge_filters(filters: List[Optional[MetadataFilters]]) -> Optional[MetadataFilters]:
         conds = [f for f in filters if f]
         if not conds:
             return None
         if len(conds) == 1:
             return conds[0]
-        return {"$and": conds}
+        return MetadataFilters(filters=conds, condition=FilterCondition.AND)
 
-    def _base_retrieve_with_filter(self, query_bundle, filter_expr: Optional[Dict[str, Any]]):
+    def _base_retrieve_with_filter(self, query_bundle, filter_expr: Optional[MetadataFilters]):
         if not filter_expr:
             return self.base.retrieve(query_bundle)
+        if self._filtered_retriever_factory is None:
+            raise TenantAuthorizationBackendError(
+                "authorized channel filter is unsupported by the retrieval backend"
+            )
         try:
-            return self.base.retrieve(query_bundle, metadata_filter=filter_expr)
-        except TypeError:
-            try:
-                return self.base.retrieve(query_bundle, filters=filter_expr)
-            except Exception:
-                return self.base.retrieve(query_bundle)
+            return self._filtered_retriever_factory(filter_expr).retrieve(query_bundle)
+        except Exception as exc:
+            raise TenantAuthorizationBackendError(
+                "authorized channel filter failed in the retrieval backend"
+            ) from exc
 
     def _expand_neighbors(self, nodes, per_parent_cap=3):
         by_parent: Dict[str, List[Any]] = {}
@@ -325,35 +344,43 @@ class ParentChildRetrieverV2:
         debug["dropped_samples"] = dropped_meta[:5]
         return kept, debug
 
-    def _entity_filtered_retrieve(self, query_bundle, qents_all: set, extra_filter: Optional[Dict[str, Any]]):
-        """Second pass with metadata filter; falls back silently if base doesn't support it."""
+    def _entity_filtered_retrieve(self, query_bundle, qents_all: set, extra_filter: Optional[MetadataFilters]):
+        """Run an optional entity-filtered pass without dropping tenant authorization."""
         if not qents_all:
             return [], {"used": False, "filter": {}, "count": 0}
 
         forms = list(qents_all)
-        filt = {
-            "$or": [
-                {"entities": {"$in": forms}},
-                {"canonical_entities": {"$in": forms}},
-            ]
-        }
+        filt = MetadataFilters(
+            filters=[
+                MetadataFilter(key="entities", value=forms, operator=FilterOperator.IN),
+                MetadataFilter(
+                    key="canonical_entities", value=forms, operator=FilterOperator.IN
+                ),
+            ],
+            condition=FilterCondition.OR,
+        )
 
         nodes2 = []
         merged_filter = self._merge_filters([filt, extra_filter])
+        if self._filtered_retriever_factory is None:
+            if extra_filter:
+                raise TenantAuthorizationBackendError(
+                    "authorized channel filter is unsupported by the retrieval backend"
+                )
+            return [], {"used": False, "filter": self._filter_debug(filt), "count": 0}
         try:
-            if merged_filter:
-                nodes2 = self.base.retrieve(query_bundle, metadata_filter=merged_filter)
-            else:
-                nodes2 = self.base.retrieve(query_bundle, metadata_filter=filt)
-        except TypeError:
-            try:
-                if merged_filter:
-                    nodes2 = self.base.retrieve(query_bundle, filters=merged_filter)
-                else:
-                    nodes2 = self.base.retrieve(query_bundle, filters=filt)
-            except Exception:
-                nodes2 = []
-        return nodes2, {"used": bool(nodes2), "filter": merged_filter or filt, "count": len(nodes2)}
+            nodes2 = self._filtered_retriever_factory(merged_filter or filt).retrieve(query_bundle)
+        except Exception as exc:
+            if extra_filter:
+                raise TenantAuthorizationBackendError(
+                    "authorized channel filter failed in the entity retrieval pass"
+                ) from exc
+            nodes2 = []
+        return nodes2, {
+            "used": bool(nodes2),
+            "filter": self._filter_debug(merged_filter or filt),
+            "count": len(nodes2),
+        }
 
     def _merge_and_boost_filtered(self, nodes_a, nodes_b, boost: float):
         """Merge two node lists by id; multiply scores of list B by boost."""

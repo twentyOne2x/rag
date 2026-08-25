@@ -8,9 +8,9 @@ from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from src.rag_v2.app_main import bootstrap_query_engine_v2  # your code
 from src.rag_v2.logging_utils import clean_model_refs, setup_logger
@@ -21,6 +21,15 @@ from src.rag_v2.config import CFG
 from src.rag_v2.query_engine_v2 import ParentChildQueryEngineV2
 from src.rag_v2.vector_store.parent_catalog import search_parent_catalog, list_recent_parent_catalog
 from src.rag_v2.vector_store.keyword_clips import scan_keyword_clips_qdrant
+from src.rag_v2.tenancy import (
+    TenantAuthorizationBackendError,
+    authenticate_gateway,
+    enforce_namespace,
+    entitlement_scope,
+    production_runtime,
+    tenant_channel_filter,
+    validate_runtime_config,
+)
 
 
 log = setup_logger("rag_v2.app")
@@ -35,6 +44,18 @@ app.add_middleware(
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_trusted_gateway(request: Request, call_next):
+    if production_runtime() and request.url.path != "/healthz":
+        try:
+            user_id, tenant_id = authenticate_gateway(request.headers)
+        except PermissionError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=401)
+        request.state.icmfyi_user_id = user_id
+        request.state.icmfyi_tenant_id = tenant_id
+    return await call_next(request)
 
 
 class EngineUnavailableError(RuntimeError):
@@ -264,6 +285,7 @@ def _resolve_research_mode(requested: Optional[str]) -> Dict[str, Any]:
 @app.on_event("startup")
 async def _startup():
     global qe_pool
+    validate_runtime_config()
 
     def _factory(profiler: ProgressRecorder) -> ParentChildQueryEngineV2:
         return bootstrap_query_engine_v2(profiler=profiler)
@@ -389,47 +411,105 @@ def _requested_mode(req: ChatReq) -> Optional[str]:
     return req.research_mode or req.mode
 
 
+def _request_scope(request: Request):
+    if not production_runtime():
+        return None
+    tenant_id = getattr(request.state, "icmfyi_tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(401, "trusted gateway scope is missing")
+    try:
+        scope = entitlement_scope(tenant_id)
+    except Exception as exc:
+        log.exception("rag[app] entitlement read failed")
+        raise HTTPException(503, "tenant entitlements are unavailable") from exc
+    if scope.empty:
+        raise HTTPException(403, "tenant has no active channel entitlements")
+    return scope
+
+
+def _authorized_filter(request: Request, requested: Optional[ChannelFilter]) -> Optional[ChannelFilter]:
+    raw = requested.dict(exclude_none=True) if requested else None
+    scope = _request_scope(request)
+    if scope is None:
+        return requested
+    try:
+        payload = tenant_channel_filter(raw, scope)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return ChannelFilter(**payload) if payload else None
+
+
+def _authorized_router_scope(requested: Optional[str]) -> Optional[str]:
+    candidate = requested if requested not in {None, "", "auto"} else None
+    try:
+        canonical = enforce_namespace(candidate)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return canonical if production_runtime() else requested
+
+
 @app.get("/channels", response_model=ChannelsResp)
-def channels(scope: str = Query(default="videos", min_length=1)) -> ChannelsResp:
-    normalized_scope = scope or "videos"
+def channels(request: Request, scope: str = Query(default="videos", min_length=1)) -> ChannelsResp:
+    try:
+        normalized_scope = enforce_namespace(scope)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
     catalog = [ChannelInfo(**entry) for entry in channel_catalog(normalized_scope)]
+    entitlement = _request_scope(request)
+    if entitlement is not None:
+        allowed = {value.casefold() for value in entitlement.names | entitlement.ids}
+        catalog = [entry for entry in catalog if entry.name.casefold() in allowed]
     defaults = [entry.name for entry in catalog]
     return ChannelsResp(scope=normalized_scope, channels=catalog, default_selected=defaults)
 
 
 @app.post("/catalog/search", response_model=CatalogSearchResp)
-def catalog_search(req: CatalogSearchReq) -> CatalogSearchResp:
-    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+def catalog_search(req: CatalogSearchReq, request: Request) -> CatalogSearchResp:
+    try:
+        namespace = enforce_namespace(req.namespace)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if req.channel_filter:
         channel_filter_payload = req.channel_filter.dict(exclude_none=True)
         if not channel_filter_payload:
             channel_filter_payload = None
+    effective_filter = _authorized_filter(
+        request,
+        ChannelFilter(**channel_filter_payload) if channel_filter_payload else None,
+    )
     results = search_parent_catalog(
         query=req.query,
         namespace=namespace,
         limit=req.limit,
-        channel_filter=channel_filter_payload,
+        channel_filter=effective_filter.dict(exclude_none=True) if effective_filter else None,
         force_refresh=bool(req.refresh),
     )
     return CatalogSearchResp(ok=True, namespace=namespace, query=req.query, results=results)
 
 
 @app.post("/catalog/recent", response_model=CatalogRecentResp)
-def catalog_recent(req: CatalogRecentReq) -> CatalogRecentResp:
-    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+def catalog_recent(req: CatalogRecentReq, request: Request) -> CatalogRecentResp:
+    try:
+        namespace = enforce_namespace(req.namespace)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if req.channel_filter:
         channel_filter_payload = req.channel_filter.dict(exclude_none=True)
         if not channel_filter_payload:
             channel_filter_payload = None
 
+    effective_filter = _authorized_filter(
+        request,
+        ChannelFilter(**channel_filter_payload) if channel_filter_payload else None,
+    )
     res = list_recent_parent_catalog(
         namespace=namespace,
         limit=req.limit,
         since=req.since,
         cursor=req.cursor,
-        channel_filter=channel_filter_payload,
+        channel_filter=effective_filter.dict(exclude_none=True) if effective_filter else None,
         force_refresh=bool(req.refresh),
     )
     return CatalogRecentResp(
@@ -446,8 +526,11 @@ def catalog_recent(req: CatalogRecentReq) -> CatalogRecentResp:
 
 
 @app.post("/clips/keyword", response_model=KeywordClipsResp)
-def clips_keyword(req: KeywordClipsReq) -> KeywordClipsResp:
-    namespace = (req.namespace or "").strip() or config_value("pinecone.namespace", default="videos")
+def clips_keyword(req: KeywordClipsReq, request: Request) -> KeywordClipsResp:
+    try:
+        namespace = enforce_namespace(req.namespace)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
 
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if req.channel_filter:
@@ -461,6 +544,10 @@ def clips_keyword(req: KeywordClipsReq) -> KeywordClipsResp:
     if limit > 2000:
         raise HTTPException(400, "limit too large; cap at 2000 (page using offset)")
 
+    effective_filter = _authorized_filter(
+        request,
+        ChannelFilter(**channel_filter_payload) if channel_filter_payload else None,
+    )
     try:
         res = scan_keyword_clips_qdrant(
             query=req.query,
@@ -468,7 +555,7 @@ def clips_keyword(req: KeywordClipsReq) -> KeywordClipsResp:
             namespace=namespace,
             limit=limit,
             offset=req.offset,
-            channel_filter=channel_filter_payload,
+            channel_filter=effective_filter.dict(exclude_none=True) if effective_filter else None,
         )
         return KeywordClipsResp(**res)
     except Exception as exc:
@@ -578,24 +665,30 @@ def _maybe_catalog_answer(
 
 
 @app.post("/chat", response_model=ChatResp)
-async def chat(req: ChatReq):
+async def chat(req: ChatReq, request: Request):
     if not req.message:
         raise HTTPException(400, "message is required")
     if qe_pool is None:
         raise HTTPException(503, "query engine not initialized")
 
     requested_mode = _requested_mode(req)
-    namespace = config_value("pinecone.namespace", default="videos")
+    effective_scope = _authorized_router_scope(req.scope)
+    namespace = enforce_namespace(effective_scope if effective_scope not in {None, "", "auto"} else None)
     channel_filter_payload: Optional[Dict[str, List[str]]] = None
     if req.channel_filter:
         channel_filter_payload = req.channel_filter.dict(exclude_none=True)
         if not channel_filter_payload:
             channel_filter_payload = None
 
+    effective_filter = _authorized_filter(
+        request,
+        ChannelFilter(**channel_filter_payload) if channel_filter_payload else None,
+    )
+    effective_payload = effective_filter.dict(exclude_none=True) if effective_filter else None
     catalog = _maybe_catalog_answer(
         message=req.message,
         namespace=namespace,
-        channel_filter=channel_filter_payload,
+        channel_filter=effective_payload,
         limit=20,
     )
     if catalog is not None:
@@ -611,9 +704,9 @@ async def chat(req: ChatReq):
             return _execute_query(
                 message=req.message,
                 history=req.chat_history if req.chat_history is not None else req.history,
-                scope=req.scope,
+                scope=effective_scope,
                 definition=req.definition,
-                channel_filter=req.channel_filter,
+                channel_filter=effective_filter,
                 research_mode=requested_mode,
                 enforce_prompt=True,
             )
@@ -623,12 +716,14 @@ async def chat(req: ChatReq):
         return _build_chat_response(answer_text, formatted_metadata, trace)
     except EngineUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except TenantAuthorizationBackendError as exc:
+        raise HTTPException(503, "tenant authorization filter is unavailable") from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/chat/simple", response_model=ChatResp)
-async def chat_simple(req: ChatReq):
+async def chat_simple(req: ChatReq, request: Request):
     if not req.message:
         raise HTTPException(400, "message is required")
     if qe_pool is None:
@@ -636,14 +731,16 @@ async def chat_simple(req: ChatReq):
 
     loop = asyncio.get_running_loop()
     requested_mode = _requested_mode(req)
+    effective_scope = _authorized_router_scope(req.scope)
+    effective_filter = _authorized_filter(request, req.channel_filter)
 
     def _run():
         return _execute_query(
             message=req.message,
             history=req.chat_history if req.chat_history is not None else req.history,
-            scope=req.scope,
+            scope=effective_scope,
             definition=req.definition,
-            channel_filter=req.channel_filter,
+            channel_filter=effective_filter,
             research_mode=requested_mode,
             enforce_prompt=False,
         )
@@ -653,12 +750,14 @@ async def chat_simple(req: ChatReq):
         return _build_chat_response(answer_text, formatted_metadata, trace)
     except EngineUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
+    except TenantAuthorizationBackendError as exc:
+        raise HTTPException(503, "tenant authorization filter is unavailable") from exc
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatReq):
+async def chat_stream(req: ChatReq, request: Request):
     if not req.message:
         raise HTTPException(400, "message is required")
     if qe_pool is None:
@@ -666,6 +765,8 @@ async def chat_stream(req: ChatReq):
 
     requested_mode = _requested_mode(req)
     history = req.chat_history if req.chat_history is not None else req.history
+    effective_scope = _authorized_router_scope(req.scope)
+    effective_filter = _authorized_filter(request, req.channel_filter)
 
     queue_out: asyncio.Queue[Any] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -688,9 +789,9 @@ async def chat_stream(req: ChatReq):
             text, formatted_metadata, trace = _execute_query(
                 message=req.message,
                 history=history,
-                scope=req.scope,
+                scope=effective_scope,
                 definition=req.definition,
-                channel_filter=req.channel_filter,
+                channel_filter=effective_filter,
                 research_mode=requested_mode,
                 enforce_prompt=True,
                 progress=progress,
@@ -705,6 +806,14 @@ async def chat_stream(req: ChatReq):
             )
         except EngineUnavailableError as exc:
             enqueue({"type": "error", "error": str(exc)})
+        except TenantAuthorizationBackendError:
+            enqueue(
+                {
+                    "type": "error",
+                    "error": "tenant authorization filter is unavailable",
+                    "code": "tenant_authorization_unavailable",
+                }
+            )
         except Exception as exc:
             enqueue({"type": "error", "error": str(exc)})
         finally:
@@ -822,9 +931,13 @@ def _execute_query(
         # the vector store.
         known = set(channel_names(scope_for_filter))
         include_names = channel_filter_payload.get("include_names")
-        if include_names is not None and known:
+        if include_names is not None and known and not production_runtime():
             # Preserve caller ordering while ensuring we don't accept arbitrary names.
             channel_filter_payload["include_names"] = [n for n in include_names if n in known]
+        if production_runtime() and not (
+            channel_filter_payload.get("include_names") or channel_filter_payload.get("include_ids")
+        ):
+            raise PermissionError("tenant channel filter resolved empty")
         qe_kwargs["channel_filter"] = channel_filter_payload
 
     query_text = (

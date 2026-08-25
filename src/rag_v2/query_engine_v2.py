@@ -36,6 +36,7 @@ from .instrumentation import AppDiagnostics, ProgressRecorder, ProgressEvent
 from .telemetry import TelemetryCollector, JsonlTelemetryWriter
 from .settings import config_value
 from .utils.youtube_metadata import fetch_video_metadata
+from .tenancy import TenantAuthorizationBackendError
 
 log = setup_logger("rag_v2.qe")
 
@@ -185,6 +186,7 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
                     "channel_id": md.get("channel_id") or md.get("parent_channel_id"),
                     "parent_id": video_id,
                     "video_id": video_id,
+                    "media_id": md.get("media_id") or md.get("parent_media_id"),
                     "start_hms": start_hms,
                     "end_hms": md.get("end_hms"),
                     "start_seconds": start_seconds,
@@ -800,20 +802,25 @@ class ParentChildQueryEngineV2(BaseQueryEngine):
             "research_mode": mode_hint,
         }
 
-        if channel_filter and hasattr(self._retriever, "set_channel_filter"):
-            try:
-                self._retriever.set_channel_filter(channel_filter)
-            except Exception:
-                pass
-        elif hasattr(self._retriever, "set_channel_filter"):
-            try:
-                self._retriever.set_channel_filter(None)
-            except Exception:
-                pass
-
-        recorder.metadata["channel_filter"] = channel_filter
-
         try:
+            if channel_filter and not hasattr(self._retriever, "set_channel_filter"):
+                raise TenantAuthorizationBackendError(
+                    "query retriever cannot enforce the authorized channel filter"
+                )
+            if channel_filter:
+                try:
+                    self._retriever.set_channel_filter(channel_filter)
+                except Exception as exc:
+                    raise TenantAuthorizationBackendError(
+                        "query retriever rejected the authorized channel filter"
+                    ) from exc
+            elif hasattr(self._retriever, "set_channel_filter"):
+                try:
+                    self._retriever.set_channel_filter(None)
+                except Exception:
+                    pass
+
+            recorder.metadata["channel_filter"] = channel_filter
             with override_runtime_config(mode_overrides):
                 return super().query(query)
         finally:

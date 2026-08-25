@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from llama_index.core import Settings, VectorStoreIndex
-from llama_index.embeddings.openai import OpenAIEmbedding
 
 try:
     from llama_index.vector_stores.pinecone import PineconeVectorStore
@@ -53,7 +52,7 @@ if not os.environ.get("K_SERVICE"):
 
 DEFAULT_INDEX_NAME = "icmfyi-v2"
 DEFAULT_NAMESPACE = "videos"
-DEFAULT_DIMENSION = 3072
+DEFAULT_DIMENSION = 1024
 DEFAULT_METRIC = "cosine"
 
 
@@ -108,6 +107,31 @@ def _qdrant_client() -> Any:
     )
 
 
+def _embedding_dimension() -> int:
+    try:
+        value = int(os.getenv("EMBED_DIM", str(DEFAULT_DIMENSION)))
+    except ValueError as exc:
+        raise RuntimeError("EMBED_DIM must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError("EMBED_DIM must be a positive integer")
+    return value
+
+
+def _existing_qdrant_dimension(client: Any, collection_name: str) -> int:
+    collection = client.get_collection(collection_name=collection_name)
+    vectors = collection.config.params.vectors
+    if isinstance(vectors, dict):
+        if len(vectors) != 1:
+            raise RuntimeError(
+                f"Qdrant collection {collection_name} must have exactly one vector configuration"
+            )
+        vectors = next(iter(vectors.values()))
+    size = getattr(vectors, "size", None)
+    if not isinstance(size, int) or size <= 0:
+        raise RuntimeError(f"Qdrant collection {collection_name} has no readable vector dimension")
+    return size
+
+
 def _ensure_qdrant_collection(client: Any, collection_name: str, dimension: int) -> None:
     exists = False
     try:
@@ -117,6 +141,11 @@ def _ensure_qdrant_collection(client: Any, collection_name: str, dimension: int)
         exists = collection_name in names
 
     if exists:
+        actual = _existing_qdrant_dimension(client, collection_name)
+        if actual != dimension:
+            raise RuntimeError(
+                f"Qdrant collection {collection_name} dimension {actual} does not match EMBED_DIM {dimension}"
+            )
         return
 
     if qm is None:
@@ -132,7 +161,7 @@ def _ensure_qdrant_collection(client: Any, collection_name: str, dimension: int)
 
 @timeit
 def ensure_index(
-    dimension: int = DEFAULT_DIMENSION,
+    dimension: int | None = None,
     metric: str = DEFAULT_METRIC,
     *,
     delete_existing: bool = False,
@@ -140,6 +169,7 @@ def ensure_index(
     """Create (or re-create) the configured vector index backing rag_v2."""
 
     backend = _backend()
+    dimension = dimension or _embedding_dimension()
 
     if backend == "qdrant":
         client = _qdrant_client()
@@ -199,7 +229,7 @@ def load_vector_store(*, namespace: Optional[str] = None) -> Any:
     if backend == "qdrant":
         client = _qdrant_client()
         collection_name = _qdrant_collection_name(ns)
-        _ensure_qdrant_collection(client, collection_name, DEFAULT_DIMENSION)
+        _ensure_qdrant_collection(client, collection_name, _embedding_dimension())
         if QdrantVectorStore is None:
             raise RuntimeError("Qdrant vector store adapter is not installed")
         return QdrantVectorStore(client=client, collection_name=collection_name)
@@ -219,27 +249,14 @@ def load_index(namespace: Optional[str] = None) -> VectorStoreIndex:
 
     store = load_vector_store(namespace=namespace)
 
-    try:
-        llm = getattr(Settings, "llm", None)
-    except Exception:
-        llm = None
-
-    service_context = None
-    if llm is not None:
-        try:
-            embed_model = OpenAIEmbedding(model="text-embedding-3-large")
-            service_context = Settings.from_defaults(llm=llm, embed_model=embed_model)
-        except Exception:
-            service_context = None
-
-    return VectorStoreIndex.from_vector_store(store, service_context=service_context)
+    return VectorStoreIndex.from_vector_store(store, embed_model=Settings.embed_model)
 
 
 @timeit
 def rebuild_index(
     nodes: Iterable,
     *,
-    dimension: int = DEFAULT_DIMENSION,
+    dimension: int | None = None,
     metric: str = DEFAULT_METRIC,
     namespace: Optional[str] = None,
 ) -> VectorStoreIndex:

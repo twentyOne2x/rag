@@ -407,6 +407,7 @@ def scan_keyword_clips_qdrant(
                 "segment_id": payload.get("segment_id") or str(getattr(p, "id", "")),
                 "parent_id": payload.get("parent_id") or payload.get("video_id"),
                 "video_id": payload.get("video_id") or payload.get("parent_id"),
+                "media_id": payload.get("media_id") or payload.get("parent_media_id"),
                 "document_type": payload.get("document_type"),
                 "start_s": start_s,
                 "end_s": end_s,
