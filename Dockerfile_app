@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Use a slimmer Python base image
-FROM python:3.11-slim as base
+FROM python:3.11-slim@sha256:9c900dea9e8fb7e16277c179b555cc72d29a352dbc33cff48ad5a0412fd5bfc7 AS base
 
 # Set the working directory in the container
 WORKDIR /app
@@ -39,10 +39,15 @@ RUN --mount=type=cache,target=/root/.cache/nltk \
     chmod -R a+r /usr/local/share/nltk_data
 ENV NLTK_DATA=/usr/local/share/nltk_data
 
+RUN groupadd --system --gid 10001 icmfyi \
+    && useradd --system --uid 10001 --gid icmfyi --home-dir /nonexistent icmfyi \
+    && chown -R icmfyi:icmfyi /app
+
 
 EXPOSE 8080
 
 # 4· entrypoint --------------------------------------------------------
+USER icmfyi
 CMD ["sh", "-c", "uvicorn src.rag_v2.app:app --host ${UVICORN_HOST:-0.0.0.0} --port ${PORT:-${UVICORN_PORT:-8080}} --workers ${UVICORN_WORKERS:-1}"]
 
 # NOTE: Tune UVICORN_WORKERS based on available CPUs (e.g. 1 worker per vCPU).
