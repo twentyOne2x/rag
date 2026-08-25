@@ -11,7 +11,8 @@ from typing import Any, Mapping
 import psycopg
 
 
-_SCOPE_RE = re.compile(r"^(?:usr|ten)_[0-9a-f]{64}$")
+_USER_SCOPE_RE = re.compile(r"^usr_[0-9a-f]{64}$")
+_TENANT_SCOPE_RE = re.compile(r"^ten_[0-9a-f]{64}$")
 _CACHE_LOCK = Lock()
 _CACHE: dict[str, tuple[float, "EntitlementScope"]] = {}
 
@@ -38,7 +39,7 @@ def authenticate_gateway(headers: Mapping[str, str]) -> tuple[str, str]:
         raise PermissionError("invalid internal service authentication")
     user_id = headers.get("x-icmfyi-user-id", "")
     tenant_id = headers.get("x-icmfyi-tenant-id", "")
-    if not _SCOPE_RE.fullmatch(user_id) or not _SCOPE_RE.fullmatch(tenant_id):
+    if not _USER_SCOPE_RE.fullmatch(user_id) or not _TENANT_SCOPE_RE.fullmatch(tenant_id):
         raise PermissionError("invalid trusted gateway scope")
     return user_id, tenant_id
 

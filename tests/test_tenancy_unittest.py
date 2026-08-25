@@ -45,6 +45,14 @@ class TenancyTests(unittest.TestCase):
                 authenticate_gateway({**headers, "x-icmfyi-internal-secret": "attacker"})
             with self.assertRaises(PermissionError):
                 authenticate_gateway({**headers, "x-icmfyi-tenant-id": "tenant-from-caller"})
+            with self.assertRaises(PermissionError):
+                authenticate_gateway(
+                    {
+                        **headers,
+                        "x-icmfyi-user-id": headers["x-icmfyi-tenant-id"],
+                        "x-icmfyi-tenant-id": headers["x-icmfyi-user-id"],
+                    }
+                )
 
     def test_namespace_widening_is_rejected(self):
         with self.production_env():
