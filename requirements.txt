@@ -11,6 +11,9 @@ llama-index-llms-openai>=0.5.6,<0.6
 # 0.5.0 requires llama-index-core<0.14; 0.5.1 supports core 0.14.x.
 llama-index-embeddings-openai>=0.5.1,<0.6
 llama-index-embeddings-huggingface==0.6.1
+# Transformers 4.x requires huggingface-hub<1.0. Without this exact compatible
+# pin, pip starts at Hub 1.x and exhaustively backtracks through Transformers.
+huggingface-hub==0.36.0
 llama-index-vector-stores-pinecone>=0.7.1,<0.8
 llama-index-vector-stores-qdrant>=0.9.1,<1.0
 # Required by llama-index-vector-stores-pinecone and used by rag_v2/indexer.py.
@@ -18,6 +21,9 @@ pinecone>=7.0,<8.0
 qdrant-client>=1.16,<2.0
 psycopg[binary]==3.2.10
 sentence-transformers==5.1.1
+# This service is CPU-only. Pin the official hash-bound CPU wheel on the
+# production target so PyPI cannot pull CUDA toolkit wheels into the image.
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=673dbf5c9bbadfffab7a386b6dd7a0c219f1408a328b7b4e86d0ae551cdafa42 ; sys_platform == "linux" and platform_machine == "x86_64"
 openai>=1.81,<2.0
 httpx>=0.27,<0.29
 pytest>=8.2,<9.0
