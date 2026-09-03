@@ -14,6 +14,8 @@ llama-index-embeddings-huggingface==0.6.1
 # Transformers 4.x requires huggingface-hub<1.0. Without this exact compatible
 # pin, pip starts at Hub 1.x and exhaustively backtracks through Transformers.
 huggingface-hub==0.36.0
+# sentence-transformers otherwise leaves the Transformers source version ranged.
+transformers==4.57.6
 llama-index-vector-stores-pinecone>=0.7.1,<0.8
 llama-index-vector-stores-qdrant>=0.9.1,<1.0
 # Required by llama-index-vector-stores-pinecone and used by rag_v2/indexer.py.

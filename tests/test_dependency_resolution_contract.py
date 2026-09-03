@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HUGGINGFACE_HUB_PIN = "huggingface-hub==0.36.0"
+TRANSFORMERS_PIN = "transformers==4.57.6"
 TORCH_CPU_PIN = (
     "torch @ https://download-r2.pytorch.org/whl/cpu/"
     "torch-2.14.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl"
@@ -30,6 +31,17 @@ def test_huggingface_hub_resolver_boundary_is_exact_in_runtime_and_ci() -> None:
             if requirement.lower().startswith("huggingface-hub")
         ]
         assert hub_requirements == [HUGGINGFACE_HUB_PIN], filename
+
+
+def test_transformers_resolver_boundary_is_exact_in_runtime_and_ci() -> None:
+    for filename in ("requirements.txt", "requirements-ci.txt"):
+        requirements = _active_requirements(ROOT / filename)
+        transformer_requirements = [
+            requirement
+            for requirement in requirements
+            if requirement.lower().startswith("transformers")
+        ]
+        assert transformer_requirements == [TRANSFORMERS_PIN], filename
 
 
 def test_linux_amd64_torch_uses_hash_bound_cpu_wheel_in_runtime_and_ci() -> None:
